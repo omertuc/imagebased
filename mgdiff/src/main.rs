@@ -26,7 +26,10 @@ fn main() {
 }
 
 fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
-    glob::glob(location.join(globstr).to_str().unwrap())
+    let mut globoptions = glob::MatchOptions::new();
+    globoptions.require_literal_leading_dot = true;
+
+    glob::glob_with(location.join(globstr).to_str().unwrap(), globoptions)
         .unwrap()
         .into_iter()
         .map(|x| x.unwrap())
@@ -63,7 +66,17 @@ fn process_yaml(yaml_path: PathBuf) {
     file.read_to_string(&mut contents)
         .expect("failed to read file");
     let mut value: Value = serde_yaml::from_str(&contents).expect("failed to parse yaml");
+
     fix_resource(&mut value);
+    fix_all_resources_in_list(&mut value);
+
+    fs::File::create(&yaml_path)
+        .expect("failed to create file")
+        .write_all(serde_yaml::to_string(&value).unwrap().as_bytes())
+        .expect("failed to write file");
+}
+
+fn fix_all_resources_in_list(value: &mut Value) {
     if let Some(items) = value.as_object_mut().unwrap().get_mut("items") {
         if !items.is_null() {
             items
@@ -73,9 +86,6 @@ fn process_yaml(yaml_path: PathBuf) {
                 .for_each(fix_resource);
         }
     }
-    let mut file = fs::File::create(&yaml_path).expect("failed to open file");
-    file.write_all(serde_yaml::to_string(&value).unwrap().as_bytes())
-        .expect("failed to write file");
 }
 
 fn cleanup_gather(gather_dir: &Path, normalized_gather: PathBuf) {
@@ -138,44 +148,63 @@ fn duplicate_must_gather(mg_dir: PathBuf, normalized_gather: &PathBuf) {
 }
 
 fn fix_resource(value: &mut Value) {
-    if let Some(metadata) = value.as_object_mut().unwrap().get_mut("metadata") {
-        if let Some(managed_fields) = metadata.as_object_mut().unwrap().get_mut("managedFields") {
-            managed_fields.as_array_mut().unwrap().clear();
-        }
+    fix_metadata(value);
+    fix_status(value);
+}
 
-        metadata
-            .as_object_mut()
-            .unwrap()
-            .remove("creationTimestamp");
-        metadata.as_object_mut().unwrap().remove("resourceVersion");
-        metadata.as_object_mut().unwrap().remove("uid");
-        metadata.as_object_mut().unwrap().remove("generation");
-
-        if let Some(owner_references) = metadata.as_object_mut().unwrap().get_mut("ownerReferences")
-        {
-            owner_references
-                .as_array_mut()
-                .unwrap()
-                .iter_mut()
-                .for_each(|owner| {
-                    owner.as_object_mut().unwrap().remove("uid");
-                });
-        }
-
-        if let Some(annotations) = metadata.as_object_mut().unwrap().get_mut("annotations") {
-            annotations
-                .as_object_mut()
-                .unwrap()
-                .remove("openshift.io/image.dockerRepositoryCheck");
-            annotations
-                .as_object_mut()
-                .unwrap()
-                .remove("kubernetes.io/service-account.uid");
-        }
-    }
-
+fn fix_status(value: &mut Value) {
     if let Some(status) = value.as_object_mut().unwrap().get_mut("status") {
         status.as_object_mut().unwrap().clear();
+    }
+}
+
+fn fix_metadata(value: &mut Value) {
+    if let Some(metadata) = value.as_object_mut().unwrap().get_mut("metadata") {
+        remove_managed_fields(metadata);
+        remove_random_valued_fields(metadata);
+        remove_owner_references(metadata);
+        remove_random_valued_annotations(metadata);
+    }
+}
+
+fn remove_random_valued_annotations(metadata: &mut Value) {
+    vec![
+        "openshift.io/image.dockerRepositoryCheck",
+        "kubernetes.io/service-account.uid",
+    ]
+    .into_iter()
+    .for_each(|annotation| {
+        if let Some(annotations) = metadata.as_object_mut().unwrap().get_mut("annotations") {
+            annotations.as_object_mut().unwrap().remove(annotation);
+        }
+    });
+}
+
+fn remove_owner_references(metadata: &mut Value) {
+    if let Some(owner_references) = metadata.as_object_mut().unwrap().get_mut("ownerReferences") {
+        owner_references
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .for_each(|owner| {
+                owner.as_object_mut().unwrap().remove("uid");
+            });
+    }
+}
+
+fn remove_random_valued_fields(metadata: &mut Value) {
+    metadata
+        .as_object_mut()
+        .unwrap()
+        .remove("creationTimestamp");
+    metadata.as_object_mut().unwrap().remove("resourceVersion");
+    metadata.as_object_mut().unwrap().remove("uid");
+    metadata.as_object_mut().unwrap().remove("generation");
+}
+
+fn remove_managed_fields(metadata: &mut Value) {
+    if let Some(managed_fields) = metadata.as_object_mut().unwrap().get_mut("managedFields") {
+        managed_fields.as_array_mut().unwrap().clear();
     }
 }
 
