@@ -1,10 +1,14 @@
 use base64::Engine as _;
-use graph::{CryptoGraph, PublicKey, PrivateKey};
+use graph::{
+    CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, PrivateKey,
+    PublicKey,
+};
 use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
     YamlLocation,
 };
 use rsa::pkcs1::DecodeRsaPrivateKey;
+use rules::{EXTERNAL_CERTS, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
 use std::{
     collections::{
@@ -18,6 +22,7 @@ use std::{
 };
 
 mod graph;
+mod json_tools;
 mod locations;
 mod rules;
 
@@ -29,9 +34,9 @@ fn main() {
         identity_to_public: HashMap::new(),
         ca_certs: HashSet::new(),
         root_certs: HashMap::new(),
-        keys: HashSet::new(),
-        cert_to_private_key: HashMap::new(),
-        privat_key_locations: HashMap::new(),
+        cert_key_pairs: HashMap::new(),
+        private_keys: HashMap::new(),
+        certs: HashMap::new(),
     };
 
     for allow_incomplete in [true, false] {
@@ -45,6 +50,63 @@ fn main() {
             &mut graph,
             allow_incomplete,
         );
+    }
+
+    process_etcd_dump(&root_dir.join("gathers/first/etcd"), &mut graph, false);
+    process_k8s_dir_dump(
+        &root_dir.join("gathers/first/kubernetes"),
+        &mut graph,
+        false,
+    );
+    pair_certs_and_key(&mut graph);
+
+    for pair in graph.cert_key_pairs.values() {
+        println!(
+            "{} issued by {}",
+            pair.distributed_cert.certificate.subject, pair.distributed_cert.certificate.issuer
+        );
+
+        for location in pair.distributed_cert.locations.iter() {
+            println!("{:#?}", location);
+        }
+        for location in pair.distributed_private_key.locations.iter() {
+            println!("{:#?}", location);
+        }
+    }
+}
+
+fn pair_certs_and_key(graph: &mut CryptoGraph) {
+    for (key, distributed_cert) in &graph.certs {
+        if let Occupied(private_key) = graph
+            .public_to_private
+            .entry(distributed_cert.certificate.public_key.clone())
+        {
+            if let Occupied(distributed_private_key) =
+                graph.private_keys.entry(private_key.get().clone())
+            {
+                graph.cert_key_pairs.insert(
+                    distributed_cert.certificate.clone(),
+                    CertKeyPair {
+                        distributed_private_key: distributed_private_key.get().clone(),
+                        distributed_cert: distributed_cert.clone(),
+                    },
+                );
+            } else {
+                panic!("Private key not found");
+            }
+        } else if !KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&distributed_cert.certificate.subject)
+            && !EXTERNAL_CERTS.contains(&distributed_cert.certificate.subject)
+        {
+            match distributed_cert.certificate.public_key {
+                PublicKey::Rsa(_) => {
+                    for location in distributed_cert.locations.iter() {
+                        println!("{} {:#?}", key, location);
+                    }
+                    panic!("done");
+                }
+                PublicKey::Dummy => {}
+            }
+        }
     }
 }
 
@@ -115,11 +177,7 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph, allow_incomplet
     );
 }
 
-fn process_k8s_yaml(
-    yaml_path: PathBuf,
-    crypto_graph: &mut CryptoGraph,
-    allow_incomplete: bool,
-) {
+fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph, allow_incomplete: bool) {
     let mut file = fs::File::open(yaml_path).expect("failed to open file");
     let mut contents = String::new();
     file.read_to_string(&mut contents)
@@ -212,14 +270,14 @@ fn process_single_pem(
 ) {
     match pem.tag() {
         "CERTIFICATE" => {
-            process_pem_cert(pem, graph, allow_incomplete);
+            process_pem_cert(pem, graph, allow_incomplete, location);
         }
         "RSA PRIVATE KEY" => {
-            process_pem_private_key(pem, graph);
+            process_pem_private_key(pem, graph, location);
         }
         "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "EC PRIVATE KEY"
         | "RSA SIGNATURE" => {
-            dbg!("TODO: Handle {} at {}", pem.tag(), location);
+            // dbg!("TODO: Handle {} at {}", pem.tag(), location);
         }
         _ => {
             panic!("unknown pem tag {}", pem.tag());
@@ -227,16 +285,46 @@ fn process_single_pem(
     }
 }
 
-fn process_pem_private_key(pem: &pem::Pem, graph: &mut CryptoGraph) {
-    let x = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
+fn process_pem_private_key(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+    let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
-    let public = PublicKey::Rsa(x.to_public_key());
-    let private = PrivateKey::Rsa(x);
+    let public_part = PublicKey::Rsa(rsa_private_key.to_public_key());
+    let private_part = PrivateKey::Rsa(rsa_private_key);
 
-    graph.public_to_private.insert(public, private);
+    register_private_key_public_key_mapping(graph, public_part, &private_part);
+    register_private_key(graph, private_part, location);
 }
 
-fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn register_private_key_public_key_mapping(
+    graph: &mut CryptoGraph,
+    public_part: PublicKey,
+    private_part: &PrivateKey,
+) {
+    graph
+        .public_to_private
+        .insert(public_part, private_part.clone());
+}
+
+fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, location: &Location) {
+    match graph.private_keys.entry(private_part.clone()) {
+        Vacant(distributed_private_key) => {
+            distributed_private_key.insert(DistributedPrivateKey {
+                private_key: private_part,
+                locations: vec![location.clone()].into_iter().collect(),
+            });
+        }
+        Occupied(entry) => {
+            entry.into_mut().locations.insert(location.clone());
+        }
+    }
+}
+
+fn process_pem_cert(
+    pem: &pem::Pem,
+    graph: &mut CryptoGraph,
+    allow_incomplete: bool,
+    location: &Location,
+) {
     let x509_certificate = x509_parser::parse_x509_certificate(pem.contents())
         .unwrap()
         .1;
@@ -245,6 +333,16 @@ fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, allow_incomplete: b
         graph_root_ca(graph, &x509_certificate);
     }
 
+    register_cert(graph, &x509_certificate, location);
+
+    process_cert_public_key(x509_certificate, graph, allow_incomplete);
+}
+
+fn process_cert_public_key(
+    x509_certificate: x509_parser::prelude::X509Certificate,
+    graph: &mut CryptoGraph,
+    allow_incomplete: bool,
+) {
     match x509_certificate.public_key().parsed().unwrap() {
         x509_parser::public_key::PublicKey::RSA(key) => {
             handle_cert_subject_rsa_public_key(key, &x509_certificate, graph, allow_incomplete);
@@ -254,6 +352,27 @@ fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, allow_incomplete: b
         }
         _ => {
             panic!("unknown public key type");
+        }
+    }
+}
+
+fn register_cert(
+    graph: &mut CryptoGraph,
+    x509_certificate: &x509_parser::prelude::X509Certificate,
+    location: &Location,
+) {
+    match graph.certs.entry(x509_certificate.issuer().to_string()) {
+        Vacant(distributed_cert) => {
+            distributed_cert.insert(DistributedCert {
+                certificate: Certificate::from(x509_certificate.clone()),
+                locations: vec![location.clone()].into_iter().collect(),
+            });
+        }
+        Occupied(distributed_cert) => {
+            distributed_cert
+                .into_mut()
+                .locations
+                .insert(location.clone());
         }
     }
 }
@@ -279,16 +398,17 @@ fn handle_cert_subject_rsa_public_key(
             .push(x509_certificate.subject().to_string());
     }
 
-    if let Occupied(entry) = graph
+    if let Occupied(private_key) = graph
         .public_to_private
         .entry(PublicKey::from_rsa(&public_key))
     {
-        graph
-            .cert_to_private_key
-            .insert(x509_certificate.subject().to_string(), entry.get().clone());
+        // graph.cert_key_pairs.insert(
+        //     x509_certificate.subject().to_string(),
+        //     private_key.get().clone(),
+        // );
     } else if !allow_incomplete
-        && !rules::KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&x509_certificate.subject().to_string())
-        && !rules::EXTERNAL_CERTS.contains(&x509_certificate.subject().to_string())
+        && !KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&x509_certificate.subject().to_string())
+        && !EXTERNAL_CERTS.contains(&x509_certificate.subject().to_string())
     {
         panic!(
             "Could not find private key for certificate subject public key: {}",
@@ -323,9 +443,9 @@ fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph, allow_incomplete: b
     let _path = get_resource_path(value);
 
     let location = K8sResourceLocation {
-        namespace: read_metadata_string_field(value, "namespace"),
-        kind: read_string_field(value, "kind"),
-        name: read_metadata_string_field(value, "name"),
+        namespace: json_tools::read_metadata_string_field(value, "namespace"),
+        kind: json_tools::read_string_field(value, "kind"),
+        name: json_tools::read_metadata_string_field(value, "name"),
     };
 
     match location.kind.as_str() {
@@ -345,7 +465,7 @@ fn scan_configmap(
         match data {
             Value::Object(data) => {
                 for (key, value) in data.iter() {
-                    if rules::IGNORE_LIST_CONFIGMAP.contains(key) {
+                    if IGNORE_LIST_CONFIGMAP.contains(key) {
                         continue;
                     }
                     if let Value::String(value) = value {
@@ -379,8 +499,8 @@ fn get_resource_path(value: &Value) -> std::string::String {
             "cluster-scoped"
         };
 
-        let api_version = read_string_field(value, "apiVersion");
-        let kind = read_string_field(value, "kind");
+        let api_version = json_tools::read_string_field(value, "apiVersion");
+        let kind = json_tools::read_string_field(value, "kind");
 
         let name = if let Some(name) = metadata.as_object().unwrap().get("name") {
             name.as_str().unwrap()
@@ -392,19 +512,4 @@ fn get_resource_path(value: &Value) -> std::string::String {
     }
 
     panic!("no metadata found");
-}
-
-fn read_string_field(value: &Value, field: &str) -> String {
-    value
-        .as_object()
-        .unwrap()
-        .get(field)
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
-fn read_metadata_string_field(value: &Value, field: &str) -> String {
-    read_string_field(value.as_object().unwrap().get("metadata").unwrap(), field)
 }

@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub(crate) enum Location {
     K8s(K8sLocation),
     Filesystem(FileLocation),
@@ -45,37 +46,37 @@ impl Location {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct PemLocationInfo {
     pub(crate) pem_bundle_index: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct FileLocation {
     pub(crate) file_path: String,
     pub(crate) content_location: FileContentLocation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum FileContentLocation {
     Raw(PemLocationInfo),
     Yaml(YamlLocation),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct YamlLocation {
     pub(crate) json_path: String,
     pub(crate) pem_location: PemLocationInfo,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct K8sResourceLocation {
     pub(crate) namespace: String,
     pub(crate) kind: String,
     pub(crate) name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct K8sLocation {
     pub(crate) resource_location: K8sResourceLocation,
     pub(crate) yaml_location: YamlLocation,
