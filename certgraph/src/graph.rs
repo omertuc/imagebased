@@ -105,7 +105,7 @@ pub(crate) struct CryptoGraph {
     pub(crate) cert_key_pairs: HashMap<Certificate, CertKeyPair>,
 
     pub(crate) private_keys: HashMap<PrivateKey, DistributedPrivateKey>,
-    pub(crate) certs: HashMap<CertAuthor, DistributedCert>,
+    pub(crate) certs: HashMap<Certificate, DistributedCert>,
 
     // Maps root cert to a list of certificates signed by it
     pub(crate) root_certs: HashMap<String, Vec<String>>,

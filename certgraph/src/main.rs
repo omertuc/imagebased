@@ -39,39 +39,31 @@ fn main() {
         certs: HashMap::new(),
     };
 
-    for allow_incomplete in [true, false] {
-        process_etcd_dump(
-            &root_dir.join("gathers/first/etcd"),
-            &mut graph,
-            allow_incomplete,
-        );
-        process_k8s_dir_dump(
-            &root_dir.join("gathers/first/kubernetes"),
-            &mut graph,
-            allow_incomplete,
-        );
-    }
-
-    process_etcd_dump(&root_dir.join("gathers/first/etcd"), &mut graph, false);
-    process_k8s_dir_dump(
-        &root_dir.join("gathers/first/kubernetes"),
-        &mut graph,
-        false,
-    );
+    process_etcd_dump(&root_dir.join("gathers/first/etcd"), &mut graph);
+    process_k8s_dir_dump(&root_dir.join("gathers/first/kubernetes"), &mut graph);
     pair_certs_and_key(&mut graph);
 
     for pair in graph.cert_key_pairs.values() {
         println!(
-            "{} issued by {}",
+            "{} ------------------> {}",
             pair.distributed_cert.certificate.subject, pair.distributed_cert.certificate.issuer
         );
 
-        for location in pair.distributed_cert.locations.iter() {
-            println!("{:#?}", location);
-        }
-        for location in pair.distributed_private_key.locations.iter() {
-            println!("{:#?}", location);
-        }
+        println!(
+            "Cert found in {} locations",
+            pair.distributed_cert.locations.len()
+        );
+        println!(
+            "Private found in {} locations",
+            pair.distributed_private_key.locations.len()
+        );
+
+        // for location in pair.distributed_cert.locations.iter() {
+        //     println!("{:#?}", location);
+        // }
+        // for location in pair.distributed_private_key.locations.iter() {
+        //     println!("{:#?}", location);
+        // }
     }
 }
 
@@ -100,7 +92,7 @@ fn pair_certs_and_key(graph: &mut CryptoGraph) {
             match distributed_cert.certificate.public_key {
                 PublicKey::Rsa(_) => {
                     for location in distributed_cert.locations.iter() {
-                        println!("{} {:#?}", key, location);
+                        println!("{:#?} {:#?}", key, location);
                     }
                     panic!("done");
                 }
@@ -120,13 +112,13 @@ fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
         .collect::<Vec<_>>()
 }
 
-fn process_etcd_dump(etcd_dump_dir: &Path, graph: &mut CryptoGraph, allow_incomplete: bool) {
-    process_k8s_yamls(etcd_dump_dir, graph, allow_incomplete);
+fn process_etcd_dump(etcd_dump_dir: &Path, graph: &mut CryptoGraph) {
+    process_k8s_yamls(etcd_dump_dir, graph);
 }
 
-fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph) {
     // process_k8s_yamls(k8s_dir, graph, allow_incomplete);
-    process_pems(k8s_dir, graph, allow_incomplete);
+    process_pems(k8s_dir, graph);
 }
 
 impl Display for CryptoGraph {
@@ -140,26 +132,26 @@ impl Display for CryptoGraph {
     }
 }
 
-fn process_k8s_yamls(yamls_dir: &Path, graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn process_k8s_yamls(yamls_dir: &Path, graph: &mut CryptoGraph) {
     let all_yaml_files = globvec(yamls_dir, "**/*.yaml");
 
     all_yaml_files.iter().for_each(|yaml_path| {
-        process_k8s_yaml(yaml_path.to_path_buf(), graph, allow_incomplete);
+        process_k8s_yaml(yaml_path.to_path_buf(), graph);
     });
 }
 
-fn process_pems(k8s_dir: &Path, graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn process_pems(k8s_dir: &Path, graph: &mut CryptoGraph) {
     globvec(k8s_dir, "**/*.pem")
         .into_iter()
         .chain(globvec(k8s_dir, "**/*.crt").into_iter())
         .chain(globvec(k8s_dir, "**/*.key").into_iter())
         .chain(globvec(k8s_dir, "**/*.pub").into_iter())
         .for_each(|pem_path| {
-            process_pem(&pem_path, graph, allow_incomplete);
+            process_pem(&pem_path, graph);
         });
 }
 
-fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph) {
     let mut file = fs::File::open(pem_file_path).expect("failed to open file");
     let mut contents = String::new();
     file.read_to_string(&mut contents)
@@ -167,7 +159,6 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph, allow_incomplet
     process_pem_bundle(
         &contents,
         graph,
-        allow_incomplete,
         &Location::Filesystem(FileLocation {
             file_path: pem_file_path.to_string_lossy().to_string(),
             content_location: FileContentLocation::Raw(PemLocationInfo {
@@ -177,20 +168,19 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph, allow_incomplet
     );
 }
 
-fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph) {
     let mut file = fs::File::open(yaml_path).expect("failed to open file");
     let mut contents = String::new();
     file.read_to_string(&mut contents)
         .expect("failed to read file");
     let value: Value = serde_yaml::from_str(&contents).expect("failed to parse yaml");
 
-    scan_k8s_resource(&value, crypto_graph, allow_incomplete);
+    scan_k8s_resource(&value, crypto_graph);
 }
 
 fn scan_k8s_secret(
     value: &Value,
     graph: &mut CryptoGraph,
-    allow_incomplete: bool,
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Some(data) = value.as_object().unwrap().get("data") {
@@ -201,13 +191,7 @@ fn scan_k8s_secret(
                         continue;
                     }
 
-                    process_k8s_secret_data_entry(
-                        key,
-                        value,
-                        graph,
-                        allow_incomplete,
-                        k8s_resource_location,
-                    );
+                    process_k8s_secret_data_entry(key, value, graph, k8s_resource_location);
                 }
             }
             _ => todo!(),
@@ -219,7 +203,6 @@ fn process_k8s_secret_data_entry(
     key: &str,
     value: &Value,
     graph: &mut CryptoGraph,
-    allow_incomplete: bool,
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Value::String(value) = value {
@@ -231,7 +214,6 @@ fn process_k8s_secret_data_entry(
             process_pem_bundle(
                 &value,
                 graph,
-                allow_incomplete,
                 &Location::K8s(K8sLocation {
                     resource_location: k8s_resource_location.clone(),
                     yaml_location: YamlLocation {
@@ -248,29 +230,19 @@ fn process_k8s_secret_data_entry(
     }
 }
 
-fn process_pem_bundle(
-    value: &str,
-    graph: &mut CryptoGraph,
-    allow_incomplete: bool,
-    location: &Location,
-) {
+fn process_pem_bundle(value: &str, graph: &mut CryptoGraph, location: &Location) {
     let pems = pem::parse_many(value).unwrap();
     for (i, pem) in pems.iter().enumerate() {
         let location = location.with_pem_bundle_index(i.try_into().unwrap());
 
-        process_single_pem(pem, graph, allow_incomplete, &location);
+        process_single_pem(pem, graph, &location);
     }
 }
 
-fn process_single_pem(
-    pem: &pem::Pem,
-    graph: &mut CryptoGraph,
-    allow_incomplete: bool,
-    location: &Location,
-) {
+fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
     match pem.tag() {
         "CERTIFICATE" => {
-            process_pem_cert(pem, graph, allow_incomplete, location);
+            process_pem_cert(pem, graph, location);
         }
         "RSA PRIVATE KEY" => {
             process_pem_private_key(pem, graph, location);
@@ -319,41 +291,14 @@ fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, locat
     }
 }
 
-fn process_pem_cert(
-    pem: &pem::Pem,
-    graph: &mut CryptoGraph,
-    allow_incomplete: bool,
-    location: &Location,
-) {
-    let x509_certificate = x509_parser::parse_x509_certificate(pem.contents())
-        .unwrap()
-        .1;
-
-    if is_self_signed(&x509_certificate) {
-        graph_root_ca(graph, &x509_certificate);
-    }
-
-    register_cert(graph, &x509_certificate, location);
-
-    process_cert_public_key(x509_certificate, graph, allow_incomplete);
-}
-
-fn process_cert_public_key(
-    x509_certificate: x509_parser::prelude::X509Certificate,
-    graph: &mut CryptoGraph,
-    allow_incomplete: bool,
-) {
-    match x509_certificate.public_key().parsed().unwrap() {
-        x509_parser::public_key::PublicKey::RSA(key) => {
-            handle_cert_subject_rsa_public_key(key, &x509_certificate, graph, allow_incomplete);
-        }
-        x509_parser::public_key::PublicKey::EC(_key) => {
-            handle_cert_subject_ec_public_key();
-        }
-        _ => {
-            panic!("unknown public key type");
-        }
-    }
+fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+    register_cert(
+        graph,
+        &x509_parser::parse_x509_certificate(pem.contents())
+            .unwrap()
+            .1,
+        location,
+    );
 }
 
 fn register_cert(
@@ -361,10 +306,11 @@ fn register_cert(
     x509_certificate: &x509_parser::prelude::X509Certificate,
     location: &Location,
 ) {
-    match graph.certs.entry(x509_certificate.issuer().to_string()) {
+    let hashable_cert = Certificate::from(x509_certificate.clone());
+    match graph.certs.entry(hashable_cert.clone()) {
         Vacant(distributed_cert) => {
             distributed_cert.insert(DistributedCert {
-                certificate: Certificate::from(x509_certificate.clone()),
+                certificate: hashable_cert,
                 locations: vec![location.clone()].into_iter().collect(),
             });
         }
@@ -377,69 +323,7 @@ fn register_cert(
     }
 }
 
-fn handle_cert_subject_ec_public_key() {}
-
-fn handle_cert_subject_rsa_public_key(
-    public_key: x509_parser::public_key::RSAPublicKey,
-    x509_certificate: &x509_parser::prelude::X509Certificate,
-    graph: &mut CryptoGraph,
-    allow_incomplete: bool,
-) {
-    let issuer = &x509_certificate.issuer();
-    if let Vacant(_entry) = graph.root_certs.entry(issuer.to_string()) {
-        if !allow_incomplete {
-            panic!("Encountered signed cert before encountering its root");
-        }
-    } else {
-        graph
-            .root_certs
-            .get_mut(&issuer.to_string())
-            .unwrap()
-            .push(x509_certificate.subject().to_string());
-    }
-
-    if let Occupied(private_key) = graph
-        .public_to_private
-        .entry(PublicKey::from_rsa(&public_key))
-    {
-        // graph.cert_key_pairs.insert(
-        //     x509_certificate.subject().to_string(),
-        //     private_key.get().clone(),
-        // );
-    } else if !allow_incomplete
-        && !KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&x509_certificate.subject().to_string())
-        && !EXTERNAL_CERTS.contains(&x509_certificate.subject().to_string())
-    {
-        panic!(
-            "Could not find private key for certificate subject public key: {}",
-            x509_certificate.subject()
-        );
-    }
-}
-
-fn graph_root_ca(
-    graph: &mut CryptoGraph,
-    x509_certificate: &x509_parser::prelude::X509Certificate,
-) {
-    if let Vacant(entry) = graph
-        .root_certs
-        .entry(x509_certificate.issuer().to_string())
-    {
-        entry.insert(vec![]);
-    } else {
-        graph
-            .root_certs
-            .get_mut(&x509_certificate.issuer().to_string())
-            .unwrap()
-            .push(x509_certificate.subject().to_string());
-    }
-}
-
-fn is_self_signed(x509_certificate: &x509_parser::prelude::X509Certificate) -> bool {
-    x509_certificate.verify_signature(None).is_ok()
-}
-
-fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph, allow_incomplete: bool) {
+fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph) {
     let _path = get_resource_path(value);
 
     let location = K8sResourceLocation {
@@ -449,8 +333,8 @@ fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph, allow_incomplete: b
     };
 
     match location.kind.as_str() {
-        "Secret" => scan_k8s_secret(value, graph, allow_incomplete, &location),
-        "ConfigMap" => scan_configmap(value, graph, allow_incomplete, &location),
+        "Secret" => scan_k8s_secret(value, graph, &location),
+        "ConfigMap" => scan_configmap(value, graph, &location),
         _ => (),
     }
 }
@@ -458,7 +342,6 @@ fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph, allow_incomplete: b
 fn scan_configmap(
     value: &Value,
     graph: &mut CryptoGraph,
-    allow_incomplete: bool,
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Some(data) = value.as_object().unwrap().get("data") {
@@ -472,7 +355,6 @@ fn scan_configmap(
                         process_pem_bundle(
                             value,
                             graph,
-                            allow_incomplete,
                             &Location::K8s(K8sLocation {
                                 resource_location: k8s_resource_location.clone(),
                                 yaml_location: YamlLocation {
