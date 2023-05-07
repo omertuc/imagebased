@@ -72,20 +72,20 @@ impl Display for graph::CryptoGraph {
     }
 }
 
-fn process_k8s_yamls(gather_dir: &Path, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
-    let all_yaml_files = globvec(gather_dir, "**/*.yaml");
+fn process_k8s_yamls(yamls_dir: &Path, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
+    let all_yaml_files = globvec(yamls_dir, "**/*.yaml");
 
     all_yaml_files.iter().for_each(|yaml_path| {
         process_k8s_yaml(yaml_path.to_path_buf(), graph, allow_incomplete);
     });
 }
 
-fn process_pems(gather_dir: &Path, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
-    globvec(gather_dir, "**/*.pem")
+fn process_pems(k8s_dir: &Path, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
+    globvec(k8s_dir, "**/*.pem")
         .into_iter()
-        .chain(globvec(gather_dir, "**/*.crt").into_iter())
-        .chain(globvec(gather_dir, "**/*.key").into_iter())
-        .chain(globvec(gather_dir, "**/*.pub").into_iter())
+        .chain(globvec(k8s_dir, "**/*.crt").into_iter())
+        .chain(globvec(k8s_dir, "**/*.key").into_iter())
+        .chain(globvec(k8s_dir, "**/*.pub").into_iter())
         .for_each(|pem_path| {
             process_pem(&pem_path, graph, allow_incomplete);
         });
@@ -100,11 +100,12 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut graph::CryptoGraph, allow_in
         &contents,
         graph,
         allow_incomplete,
-        &locations::Location::Filesystem(locations::FileLocation::Raw(
-            locations::PemLocationInfo {
+        &locations::Location::Filesystem(locations::FileLocation {
+            file_path: pem_file_path.to_string_lossy().to_string(),
+            content_location: locations::FileContentLocation::Raw(locations::PemLocationInfo {
                 pem_bundle_index: None,
-            },
-        )),
+            }),
+        }),
     );
 }
 
@@ -193,34 +194,26 @@ fn process_pem_bundle(
     for (i, pem) in pems.iter().enumerate() {
         let location = location.with_pem_bundle_index(i.try_into().unwrap());
 
-        dbg!(location);
-
-        process_single_pem(pem, graph, allow_incomplete);
+        process_single_pem(pem, graph, allow_incomplete, &location);
     }
 }
 
-fn process_single_pem(pem: &pem::Pem, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
+fn process_single_pem(
+    pem: &pem::Pem,
+    graph: &mut graph::CryptoGraph,
+    allow_incomplete: bool,
+    location: &locations::Location,
+) {
     match pem.tag() {
         "CERTIFICATE" => {
             process_pem_cert(pem, graph, allow_incomplete);
         }
-        "RSA PUBLIC KEY" => {
-            // panic!("found pem raw public key");
-        }
         "RSA PRIVATE KEY" => {
             process_pem_private_key(pem, graph);
         }
-        "PRIVATE KEY" => {
-            dbg!("Non-RSA private key");
-        }
-        "ENTITLEMENT DATA" => {
-            dbg!("Entitlement");
-        }
-        "EC PRIVATE KEY" => {
-            dbg!("EC Private key");
-        }
-        "RSA SIGNATURE" => {
-            dbg!("RSA Sig");
+        "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "EC PRIVATE KEY"
+        | "RSA SIGNATURE" => {
+            dbg!("TODO: Handle {} at {}", pem.tag(), location);
         }
         _ => {
             panic!("unknown pem tag {}", pem.tag());
@@ -232,13 +225,9 @@ fn process_pem_private_key(pem: &pem::Pem, graph: &mut graph::CryptoGraph) {
     let x = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
     let public = graph::PublicKey::Rsa(x.to_public_key());
-    let private = graph::PrivateKey::Rsa(x.clone());
+    let private = graph::PrivateKey::Rsa(x);
 
     graph.public_to_private.insert(public, private);
-
-    dbg!("Found private key");
-    // panic!("done");
-    // panic!("found private key");
 }
 
 fn process_pem_cert(pem: &pem::Pem, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {

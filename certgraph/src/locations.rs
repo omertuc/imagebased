@@ -23,16 +23,22 @@ impl Location {
                     Some(pem_bundle_index);
                 Self::K8s(new_k8s_location)
             }
-            Self::Filesystem(file_location) => match file_location {
-                FileLocation::Raw(pem_location_info) => {
+            Self::Filesystem(file_location) => match &file_location.content_location {
+                FileContentLocation::Raw(pem_location_info) => {
                     let mut new_pem_location_info = pem_location_info.clone();
                     new_pem_location_info.pem_bundle_index = Some(pem_bundle_index);
-                    Self::Filesystem(FileLocation::Raw(new_pem_location_info))
+                    let mut new_file_location = file_location.clone();
+                    new_file_location.content_location =
+                        FileContentLocation::Raw(new_pem_location_info);
+                    Self::Filesystem(new_file_location)
                 }
-                FileLocation::Yaml(yaml_location) => {
+                FileContentLocation::Yaml(yaml_location) => {
                     let mut new_yaml_location = yaml_location.clone();
                     new_yaml_location.pem_location.pem_bundle_index = Some(pem_bundle_index);
-                    Self::Filesystem(FileLocation::Yaml(new_yaml_location))
+                    let mut new_file_location = file_location.clone();
+                    new_file_location.content_location =
+                        FileContentLocation::Yaml(new_yaml_location);
+                    Self::Filesystem(new_file_location)
                 }
             },
         }
@@ -45,7 +51,13 @@ pub(crate) struct PemLocationInfo {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum FileLocation {
+pub(crate) struct FileLocation {
+    pub(crate) file_path: String,
+    pub(crate) content_location: FileContentLocation,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FileContentLocation {
     Raw(PemLocationInfo),
     Yaml(YamlLocation),
 }
