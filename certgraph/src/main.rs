@@ -1,3 +1,6 @@
+use base64::Engine as _;
+use rsa::pkcs1::DecodeRsaPrivateKey;
+use serde_json::Value;
 use std::{
     collections::{
         hash_map::Entry::{Occupied, Vacant},
@@ -8,12 +11,6 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
-
-use base64::Engine as _;
-
-use serde_json::Value;
-
-use rsa::pkcs1::DecodeRsaPrivateKey;
 
 mod graph;
 mod locations;
@@ -55,11 +52,7 @@ fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
         .collect::<Vec<_>>()
 }
 
-fn process_etcd_dump(
-    etcd_dump_dir: &Path,
-    graph: &mut graph::CryptoGraph,
-    allow_incomplete: bool,
-) {
+fn process_etcd_dump(etcd_dump_dir: &Path, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
     process_k8s_yamls(etcd_dump_dir, graph, allow_incomplete);
 }
 
