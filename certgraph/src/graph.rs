@@ -1,4 +1,4 @@
-use crate::locations;
+use crate::locations::{self, Location};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::collections::{HashMap, HashSet};
 use x509_parser::public_key::RSAPublicKey;
@@ -24,8 +24,8 @@ impl PublicKey {
 
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Key {
-    PrivateKey(locations::Location, PrivateKey),
-    PublicKey(locations::Location, String),
+    PrivateKey(Location, PrivateKey),
+    PublicKey(Location, String),
 }
 
 pub(crate) struct CryptoGraph {
@@ -34,6 +34,7 @@ pub(crate) struct CryptoGraph {
     pub(crate) ca_certs: HashSet<String>,
     pub(crate) keys: HashSet<Key>,
     pub(crate) cert_to_private_key: HashMap<String, PrivateKey>,
+    pub(crate) privat_key_locations: HashMap<PrivateKey, Vec<Location>>,
 
     // Maps root cert to a list of certificates signed by it
     pub(crate) root_certs: HashMap<String, Vec<String>>,
