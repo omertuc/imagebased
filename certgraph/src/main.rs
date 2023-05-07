@@ -45,17 +45,11 @@ fn main() {
 
     for pair in graph.cert_key_pairs.values() {
         println!(
-            "{} ------------------> {}",
-            pair.distributed_cert.certificate.subject, pair.distributed_cert.certificate.issuer
-        );
-
-        println!(
-            "Cert found in {} locations",
-            pair.distributed_cert.locations.len()
-        );
-        println!(
-            "Private found in {} locations",
-            pair.distributed_private_key.locations.len()
+            "Cert {:03} locations, priv {:03} locations | {} ---> {}",
+            pair.distributed_cert.locations.len(),
+            pair.distributed_private_key.locations.len(),
+            pair.distributed_cert.certificate.subject,
+            pair.distributed_cert.certificate.issuer,
         );
 
         // for location in pair.distributed_cert.locations.iter() {
