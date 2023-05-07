@@ -96,7 +96,7 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut graph::CryptoGraph, allow_in
     let mut contents = String::new();
     file.read_to_string(&mut contents)
         .expect("failed to read file");
-    unpem(
+    process_pem_bundle(
         &contents,
         graph,
         allow_incomplete,
@@ -163,7 +163,7 @@ fn process_k8s_secret_data_entry(
                 panic!("Failed to decode base64 {}", key);
             });
 
-            unpem(
+            process_pem_bundle(
                 &value,
                 graph,
                 allow_incomplete,
@@ -178,12 +178,12 @@ fn process_k8s_secret_data_entry(
                 }),
             );
         } else {
-            dbg!("Failed to decode base64 {}", value);
+            panic!("Failed to decode base64 {}", value);
         }
     }
 }
 
-fn unpem(
+fn process_pem_bundle(
     value: &str,
     graph: &mut graph::CryptoGraph,
     allow_incomplete: bool,
@@ -195,63 +195,70 @@ fn unpem(
 
         dbg!(location);
 
-        match pem.tag() {
-            "CERTIFICATE" => {
-                let x509_certificate = x509_parser::parse_x509_certificate(pem.contents())
-                    .unwrap()
-                    .1;
+        process_single_pem(pem, graph, allow_incomplete);
+    }
+}
 
-                if is_self_signed(&x509_certificate) {
-                    graph_root_ca(graph, &x509_certificate);
-                }
+fn process_single_pem(pem: &pem::Pem, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
+    match pem.tag() {
+        "CERTIFICATE" => {
+            process_pem_cert(pem, graph, allow_incomplete);
+        }
+        "RSA PUBLIC KEY" => {
+            // panic!("found pem raw public key");
+        }
+        "RSA PRIVATE KEY" => {
+            process_pem_private_key(pem, graph);
+        }
+        "PRIVATE KEY" => {
+            dbg!("Non-RSA private key");
+        }
+        "ENTITLEMENT DATA" => {
+            dbg!("Entitlement");
+        }
+        "EC PRIVATE KEY" => {
+            dbg!("EC Private key");
+        }
+        "RSA SIGNATURE" => {
+            dbg!("RSA Sig");
+        }
+        _ => {
+            panic!("unknown pem tag {}", pem.tag());
+        }
+    }
+}
 
-                match x509_certificate.public_key().parsed().unwrap() {
-                    x509_parser::public_key::PublicKey::RSA(key) => {
-                        handle_cert_subject_rsa_public_key(
-                            key,
-                            &x509_certificate,
-                            graph,
-                            allow_incomplete,
-                        );
-                    }
-                    x509_parser::public_key::PublicKey::EC(_key) => {
-                        handle_cert_subject_ec_public_key();
-                    }
-                    _ => {
-                        panic!("unknown public key type");
-                    }
-                }
-            }
-            "RSA PUBLIC KEY" => {
-                // panic!("found pem raw public key");
-            }
-            "RSA PRIVATE KEY" => {
-                let x = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
+fn process_pem_private_key(pem: &pem::Pem, graph: &mut graph::CryptoGraph) {
+    let x = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
-                let public = graph::PublicKey::Rsa(x.to_public_key());
-                let private = graph::PrivateKey::Rsa(x.clone());
+    let public = graph::PublicKey::Rsa(x.to_public_key());
+    let private = graph::PrivateKey::Rsa(x.clone());
 
-                graph.public_to_private.insert(public, private);
+    graph.public_to_private.insert(public, private);
 
-                dbg!("Found private key");
-                // panic!("done");
-                // panic!("found private key");
-            }
-            "PRIVATE KEY" => {
-                dbg!("Non-RSA private key");
-            }
-            "ENTITLEMENT DATA" => {
-                dbg!("Entitlement");
-            }
-            "EC PRIVATE KEY" => {
-                dbg!("EC Private key");
-            }
-            "RSA SIGNATURE" => {
-                dbg!("RSA Sig");
-            }
-            _ => {
-                panic!("unknown pem tag {}", pem.tag());
-            }
+    dbg!("Found private key");
+    // panic!("done");
+    // panic!("found private key");
+}
+
+fn process_pem_cert(pem: &pem::Pem, graph: &mut graph::CryptoGraph, allow_incomplete: bool) {
+    let x509_certificate = x509_parser::parse_x509_certificate(pem.contents())
+        .unwrap()
+        .1;
+
+    if is_self_signed(&x509_certificate) {
+        graph_root_ca(graph, &x509_certificate);
+    }
+
+    match x509_certificate.public_key().parsed().unwrap() {
+        x509_parser::public_key::PublicKey::RSA(key) => {
+            handle_cert_subject_rsa_public_key(key, &x509_certificate, graph, allow_incomplete);
+        }
+        x509_parser::public_key::PublicKey::EC(_key) => {
+            handle_cert_subject_ec_public_key();
+        }
+        _ => {
+            panic!("unknown public key type");
         }
     }
 }
@@ -347,7 +354,7 @@ fn scan_configmap(
                         continue;
                     }
                     if let Value::String(value) = value {
-                        unpem(
+                        process_pem_bundle(
                             value,
                             graph,
                             allow_incomplete,
