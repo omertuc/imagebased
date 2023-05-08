@@ -1,6 +1,10 @@
 use crate::locations::Location;
 use rsa::{RsaPrivateKey, RsaPublicKey};
-use std::{collections::{HashMap, HashSet}, fmt::Display};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    hash::{Hash, Hasher},
+};
 use x509_parser::{
     certificate::X509Certificate,
     public_key::{PublicKey::RSA, RSAPublicKey},
@@ -35,20 +39,51 @@ impl std::fmt::Debug for PublicKey {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, Debug)]
-pub(crate) struct Certificate {
+#[derive(Clone, Debug)]
+pub(crate) struct Certificate<'a> {
     pub(crate) issuer: String,
     pub(crate) subject: String,
     pub(crate) public_key: PublicKey,
+    pub(crate) original: X509Certificate<'a>,
 }
 
-impl From<X509Certificate<'_>> for Certificate {
-    fn from(cert: X509Certificate<'_>) -> Self {
+impl PartialEq for Certificate<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.issuer == other.issuer
+            && self.subject == other.subject
+            && self.public_key == other.public_key
+    }
+}
+
+impl Eq for Certificate<'_> {}
+
+impl Hash for Certificate<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.issuer.hash(state);
+        self.subject.hash(state);
+        self.public_key.hash(state);
+    }
+}
+
+impl<'a> From<X509Certificate<'a>> for Certificate<'a> {
+    fn from(cert: X509Certificate<'a>) -> Self {
         Certificate {
             issuer: cert.tbs_certificate.issuer.to_string(),
             subject: cert.tbs_certificate.subject.to_string(),
             public_key: PublicKey::from(cert.public_key().clone()),
+            original: cert.clone(),
         }
+    }
+}
+
+impl Display for CryptoGraph<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (root_cert, signed_certs) in &self.root_certs {
+            for signed_cert in signed_certs {
+                writeln!(f, "  \"{}\" -> \"{}\" ", root_cert, signed_cert,)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -86,26 +121,27 @@ pub(crate) struct DistributedPrivateKey {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct DistributedCert {
-    pub(crate) certificate: Certificate,
+pub(crate) struct DistributedCert<'a> {
+    pub(crate) certificate: Certificate<'a>,
     pub(crate) locations: Locations,
 }
 
 #[derive(Debug)]
-pub(crate) struct CertKeyPair {
+pub(crate) struct CertKeyPair<'a> {
     pub(crate) distributed_private_key: DistributedPrivateKey,
-    pub(crate) distributed_cert: DistributedCert,
+    pub(crate) distributed_cert: DistributedCert<'a>,
+    pub(crate) signer: Box<Option<Certificate<'a>>>,
 }
 
-pub(crate) struct CryptoGraph {
+pub(crate) struct CryptoGraph<'a> {
     pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
     pub(crate) identity_to_public: HashMap<String, String>,
     pub(crate) ca_certs: HashSet<String>,
 
-    pub(crate) cert_key_pairs: HashMap<Certificate, CertKeyPair>,
+    pub(crate) cert_key_pairs: HashMap<Certificate<'a>, CertKeyPair<'a>>,
 
     pub(crate) private_keys: HashMap<PrivateKey, DistributedPrivateKey>,
-    pub(crate) certs: HashMap<Certificate, DistributedCert>,
+    pub(crate) certs: HashMap<Certificate<'a>, DistributedCert<'a>>,
 
     // Maps root cert to a list of certificates signed by it
     pub(crate) root_certs: HashMap<String, Vec<String>>,

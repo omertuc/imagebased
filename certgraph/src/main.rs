@@ -15,7 +15,6 @@ use std::{
         hash_map::Entry::{Occupied, Vacant},
         HashMap, HashSet,
     },
-    fmt::Display,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -61,12 +60,34 @@ fn main() {
     }
 }
 
+fn is_self_signed(x509_certificate: &x509_parser::prelude::X509Certificate) -> bool {
+    x509_certificate.verify_signature(None).is_ok()
+}
+
 fn pair_certs_and_key(graph: &mut CryptoGraph) {
     for (key, distributed_cert) in &graph.certs {
         if let Occupied(private_key) = graph
             .public_to_private
             .entry(distributed_cert.certificate.public_key.clone())
         {
+            let mut true_signing_cert: Option<Certificate> = None;
+            for potential_signing_cert in graph.certs.values() {
+                if distributed_cert
+                    .certificate
+                    .original
+                    .verify_signature(Some(
+                        potential_signing_cert.certificate.original.public_key(),
+                    ))
+                    .is_ok()
+                {
+                    true_signing_cert = Some(potential_signing_cert.certificate.clone())
+                }
+            }
+
+            if true_signing_cert.is_none() {
+                panic!("No signing cert found");
+            }
+
             if let Occupied(distributed_private_key) =
                 graph.private_keys.entry(private_key.get().clone())
             {
@@ -75,6 +96,7 @@ fn pair_certs_and_key(graph: &mut CryptoGraph) {
                     CertKeyPair {
                         distributed_private_key: distributed_private_key.get().clone(),
                         distributed_cert: distributed_cert.clone(),
+                        signer: Box::new(true_signing_cert),
                     },
                 );
             } else {
@@ -113,17 +135,6 @@ fn process_etcd_dump(etcd_dump_dir: &Path, graph: &mut CryptoGraph) {
 fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph) {
     // process_k8s_yamls(k8s_dir, graph, allow_incomplete);
     process_pems(k8s_dir, graph);
-}
-
-impl Display for CryptoGraph {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (root_cert, signed_certs) in &self.root_certs {
-            for signed_cert in signed_certs {
-                writeln!(f, "  \"{}\" -> \"{}\" ", root_cert, signed_cert,)?;
-            }
-        }
-        Ok(())
-    }
 }
 
 fn process_k8s_yamls(yamls_dir: &Path, graph: &mut CryptoGraph) {
