@@ -7,6 +7,7 @@ use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
     YamlLocation,
 };
+use pem::Pem;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rules::{EXTERNAL_CERTS, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
@@ -18,12 +19,20 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 mod graph;
 mod json_tools;
 mod locations;
 mod rules;
+
+use lazy_static::lazy_static;
+
+lazy_static! {
+    pub(crate) static ref PEMS: Mutex<HashMap<String, Vec<Pem>>> =
+        Mutex::new(HashMap::new());
+}
 
 fn main() {
     let root_dir = PathBuf::from(".");
@@ -179,7 +188,6 @@ fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph) {
     file.read_to_string(&mut contents)
         .expect("failed to read file");
     let value: Value = serde_yaml::from_str(&contents).expect("failed to parse yaml");
-
     scan_k8s_resource(&value, crypto_graph);
 }
 
@@ -237,14 +245,25 @@ fn process_k8s_secret_data_entry(
 
 fn process_pem_bundle(value: &str, graph: &mut CryptoGraph, location: &Location) {
     let pems = pem::parse_many(value).unwrap();
-    for (i, pem) in pems.iter().enumerate() {
-        let location = location.with_pem_bundle_index(i.try_into().unwrap());
 
-        process_single_pem(pem, graph, &location);
+    let uuid = uuid::Uuid::new_v4().to_string();
+
+    let mut pems_global_map = PEMS.lock().unwrap();
+
+    if let Vacant(entry) = pems_global_map.entry(uuid.to_string()) {
+        entry.insert(pems);
+    }
+
+    if let Occupied(entry) = pems_global_map.entry(uuid.to_string()) {
+        for (i, pem) in entry.get().iter().enumerate() {
+            let location = location.with_pem_bundle_index(i.try_into().unwrap());
+
+            process_single_pem(pem, graph, &location);
+        }
     }
 }
 
-fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+fn process_single_pem<'a>(pem: &'a pem::Pem, graph: &'a mut CryptoGraph, location: &Location) {
     match pem.tag() {
         "CERTIFICATE" => {
             process_pem_cert(pem, graph, location);
@@ -296,7 +315,7 @@ fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, locat
     }
 }
 
-fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+fn process_pem_cert<'a>(pem: &'a pem::Pem, graph: &mut CryptoGraph<'a>, location: &Location) {
     register_cert(
         graph,
         &x509_parser::parse_x509_certificate(pem.contents())
@@ -306,12 +325,13 @@ fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location
     );
 }
 
-fn register_cert(
-    graph: &mut CryptoGraph,
-    x509_certificate: &x509_parser::prelude::X509Certificate,
+fn register_cert<'a>(
+    graph: &'a mut CryptoGraph<'a>,
+    x509_certificate: &'a x509_parser::prelude::X509Certificate<'a>,
     location: &Location,
 ) {
     let hashable_cert = Certificate::from(x509_certificate.clone());
+
     match graph.certs.entry(hashable_cert.clone()) {
         Vacant(distributed_cert) => {
             distributed_cert.insert(DistributedCert {
