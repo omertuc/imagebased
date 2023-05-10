@@ -7,7 +7,7 @@ use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
     YamlLocation,
 };
-use pem::Pem;
+use pkcs1::EncodeRsaPublicKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rules::{EXTERNAL_CERTS, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
@@ -19,20 +19,12 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::Mutex,
 };
 
 mod graph;
 mod json_tools;
 mod locations;
 mod rules;
-
-use lazy_static::lazy_static;
-
-lazy_static! {
-    pub(crate) static ref PEMS: Mutex<HashMap<String, Vec<Pem>>> =
-        Mutex::new(HashMap::new());
-}
 
 fn main() {
     let root_dir = PathBuf::from(".");
@@ -69,12 +61,9 @@ fn main() {
     }
 }
 
-fn is_self_signed(x509_certificate: &x509_parser::prelude::X509Certificate) -> bool {
-    x509_certificate.verify_signature(None).is_ok()
-}
-
 fn pair_certs_and_key(graph: &mut CryptoGraph) {
-    for (key, distributed_cert) in &graph.certs {
+    dbg!(graph.certs.len());
+    for (_hashable_cert, distributed_cert) in &graph.certs {
         if let Occupied(private_key) = graph
             .public_to_private
             .entry(distributed_cert.certificate.public_key.clone())
@@ -84,9 +73,7 @@ fn pair_certs_and_key(graph: &mut CryptoGraph) {
                 if distributed_cert
                     .certificate
                     .original
-                    .verify_signature(Some(
-                        potential_signing_cert.certificate.original.public_key(),
-                    ))
+                    .verify_signed_by_certificate(&potential_signing_cert.certificate.original)
                     .is_ok()
                 {
                     true_signing_cert = Some(potential_signing_cert.certificate.clone())
@@ -115,13 +102,17 @@ fn pair_certs_and_key(graph: &mut CryptoGraph) {
             && !EXTERNAL_CERTS.contains(&distributed_cert.certificate.subject)
         {
             match distributed_cert.certificate.public_key {
-                PublicKey::Rsa(_) => {
+                PublicKey::Raw(_) => {
                     for location in distributed_cert.locations.iter() {
-                        println!("{:#?} {:#?}", key, location);
+                        println!(
+                            "{:#?} {:#?}",
+                            distributed_cert.certificate.original, location
+                        );
                     }
                     panic!("done");
                 }
-                PublicKey::Dummy => {}
+                // PublicKey::Dummy => {}
+                PublicKey::Rsa(_) => {}
             }
         }
     }
@@ -246,24 +237,14 @@ fn process_k8s_secret_data_entry(
 fn process_pem_bundle(value: &str, graph: &mut CryptoGraph, location: &Location) {
     let pems = pem::parse_many(value).unwrap();
 
-    let uuid = uuid::Uuid::new_v4().to_string();
+    for (i, pem) in pems.iter().enumerate() {
+        let location = location.with_pem_bundle_index(i.try_into().unwrap());
 
-    let mut pems_global_map = PEMS.lock().unwrap();
-
-    if let Vacant(entry) = pems_global_map.entry(uuid.to_string()) {
-        entry.insert(pems);
-    }
-
-    if let Occupied(entry) = pems_global_map.entry(uuid.to_string()) {
-        for (i, pem) in entry.get().iter().enumerate() {
-            let location = location.with_pem_bundle_index(i.try_into().unwrap());
-
-            process_single_pem(pem, graph, &location);
-        }
+        process_single_pem(pem, graph, &location);
     }
 }
 
-fn process_single_pem<'a>(pem: &'a pem::Pem, graph: &'a mut CryptoGraph, location: &Location) {
+fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
     match pem.tag() {
         "CERTIFICATE" => {
             process_pem_cert(pem, graph, location);
@@ -284,7 +265,15 @@ fn process_single_pem<'a>(pem: &'a pem::Pem, graph: &'a mut CryptoGraph, locatio
 fn process_pem_private_key(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
     let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
-    let public_part = PublicKey::Rsa(rsa_private_key.to_public_key());
+    let bytes = bytes::Bytes::copy_from_slice(
+        rsa_private_key
+            .to_public_key()
+            .to_pkcs1_der()
+            .unwrap()
+            .as_bytes(),
+    );
+
+    let public_part = PublicKey::from_bytes(&bytes);
     let private_part = PrivateKey::Rsa(rsa_private_key);
 
     register_private_key_public_key_mapping(graph, public_part, &private_part);
@@ -315,19 +304,17 @@ fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, locat
     }
 }
 
-fn process_pem_cert<'a>(pem: &'a pem::Pem, graph: &mut CryptoGraph<'a>, location: &Location) {
+fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
     register_cert(
         graph,
-        &x509_parser::parse_x509_certificate(pem.contents())
-            .unwrap()
-            .1,
+        &x509_certificate::CapturedX509Certificate::from_der(pem.contents()).unwrap(),
         location,
     );
 }
 
-fn register_cert<'a>(
-    graph: &'a mut CryptoGraph<'a>,
-    x509_certificate: &'a x509_parser::prelude::X509Certificate<'a>,
+fn register_cert(
+    graph: &mut CryptoGraph,
+    x509_certificate: &x509_certificate::CapturedX509Certificate,
     location: &Location,
 ) {
     let hashable_cert = Certificate::from(x509_certificate.clone());
