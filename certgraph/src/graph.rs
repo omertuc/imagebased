@@ -134,20 +134,71 @@ pub(crate) struct DistributedCert {
     pub(crate) locations: Locations,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CertKeyPair {
     pub(crate) distributed_private_key: Option<DistributedPrivateKey>,
     pub(crate) distributed_cert: DistributedCert,
     pub(crate) signer: Box<Option<Certificate>>,
-    pub(crate) signees: Box<Option<Vec<CertKeyPair>>>,
+    pub(crate) signees: Vec<CertKeyPair>,
 }
 
+impl Display for CertKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(signer) = &self.signer.as_ref() {
+            if let Some(distributed_private_key) = &self.distributed_private_key {
+                write!(
+                    f,
+                    "Cert {:03} locations, priv {:03} locations | {} ---> {}",
+                    self.distributed_cert.locations.len(),
+                    distributed_private_key.locations.len(),
+                    self.distributed_cert.certificate.subject,
+                    self.distributed_cert.certificate.issuer
+                        == signer.clone().issuer,
+                )?;
+            } else {
+                write!(
+                    f,
+                    "Cert {:03} locations, NO PRIV | {} ---> {}",
+                    self.distributed_cert.locations.len(),
+                    self.distributed_cert.certificate.subject,
+                    self.distributed_cert.certificate.issuer
+                        == signer.clone().issuer,
+                )?;
+            }
+        } else {
+            if let Some(distributed_private_key) = &self.distributed_private_key {
+                write!(
+                    f,
+                    "Cert {:03} locations, priv {:03} locations | {} ---> SELF SIGNED",
+                    self.distributed_cert.locations.len(),
+                    distributed_private_key.locations.len(),
+                    self.distributed_cert.certificate.subject,
+                )?;
+            } else {
+                write!(
+                    f,
+                    "Cert {:03} locations, NO PRIV | {} ---> SELF SIGNED",
+                    self.distributed_cert.locations.len(),
+                    self.distributed_cert.certificate.subject,
+                )?;
+            }
+        }
+
+        // for signee in self.signees.iter() {
+        //     writeln!(f, "  {}", signee)?;
+        // }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct CryptoGraph {
     pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
     pub(crate) identity_to_public: HashMap<String, String>,
     pub(crate) ca_certs: HashSet<String>,
 
-    pub(crate) cert_key_pairs: HashMap<Certificate, CertKeyPair>,
+    pub(crate) cert_key_pairs: Vec<CertKeyPair>,
 
     pub(crate) private_keys: HashMap<PrivateKey, DistributedPrivateKey>,
     pub(crate) certs: HashMap<Certificate, DistributedCert>,

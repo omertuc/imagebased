@@ -34,7 +34,7 @@ fn main() {
         identity_to_public: HashMap::new(),
         ca_certs: HashSet::new(),
         root_certs: HashMap::new(),
-        cert_key_pairs: HashMap::new(),
+        cert_key_pairs: Vec::new(),
         private_keys: HashMap::new(),
         certs: HashMap::new(),
     };
@@ -42,58 +42,67 @@ fn main() {
     process_etcd_dump(&root_dir.join("gathers/first/etcd"), &mut graph);
     process_k8s_dir_dump(&root_dir.join("gathers/first/kubernetes"), &mut graph);
     pair_certs_and_key(&mut graph);
+    create_graph(&mut graph);
 
-    for pair in graph.cert_key_pairs.values() {
-        if let Some(distributed_private_key) = &pair.distributed_private_key {
-            println!(
-                "Cert {:03} locations, priv {:03} locations | {} ---> {}",
-                pair.distributed_cert.locations.len(),
-                distributed_private_key.locations.len(),
-                pair.distributed_cert.certificate.subject,
-                pair.distributed_cert.certificate.issuer
-                    == pair.signer.as_ref().clone().unwrap().issuer,
-            );
-        } else {
-            println!(
-                "Cert {:03} locations, NO PRIV | {} ---> {}",
-                pair.distributed_cert.locations.len(),
-                pair.distributed_cert.certificate.subject,
-                pair.distributed_cert.certificate.issuer
-                    == pair.signer.as_ref().clone().unwrap().issuer,
-            );
+    for pair in graph.cert_key_pairs {
+        println!("{}", pair);
+    }
+}
+
+fn create_graph(graph: &mut CryptoGraph) {
+    let mut pairs = graph.cert_key_pairs.clone();
+    let pairs_copy = pairs.clone();
+
+    for pair in &mut pairs {
+        if pair.signer.is_some() {
+            continue;
         }
 
-        // for location in pair.distributed_cert.locations.iter() {
-        //     println!("{:#?}", location);
-        // }
-        // for location in pair.distributed_private_key.locations.iter() {
-        //     println!("{:#?}", location);
-        // }
+        fill_signees(pair, pairs_copy.clone());
     }
+
+    graph.cert_key_pairs = pairs;
+}
+
+fn fill_signees(pair: &mut CertKeyPair, pairs: Vec<CertKeyPair>) {
+    let mut signees = Vec::new();
+    let pairs_copy = pairs.clone();
+    for potential_signee in &mut pairs.clone() {
+        if let Some(potential_signee_signer) = &potential_signee.signer.as_ref() {
+            if potential_signee_signer.original == pair.distributed_cert.certificate.original {
+                fill_signees(potential_signee, pairs_copy.clone());
+                signees.push(potential_signee.clone());
+            }
+        }
+    }
+    pair.signees = signees;
 }
 
 fn pair_certs_and_key(graph: &mut CryptoGraph) {
     for (_hashable_cert, distributed_cert) in &graph.certs {
         let mut true_signing_cert: Option<Certificate> = None;
-        for potential_signing_cert in graph.certs.values() {
-            if distributed_cert
-                .certificate
-                .original
-                .verify_signed_by_certificate(&potential_signing_cert.certificate.original)
-                .is_ok()
-            {
-                true_signing_cert = Some(potential_signing_cert.certificate.clone())
+        if !distributed_cert.certificate.original.subject_is_issuer() {
+            for potential_signing_cert in graph.certs.values() {
+                if distributed_cert
+                    .certificate
+                    .original
+                    .verify_signed_by_certificate(&potential_signing_cert.certificate.original)
+                    .is_ok()
+                {
+                    true_signing_cert = Some(potential_signing_cert.certificate.clone())
+                }
             }
-        }
 
-        if true_signing_cert.is_none() {
-            panic!("No signing cert found");
+            if true_signing_cert.is_none() {
+                panic!("No signing cert found");
+            }
         }
 
         let mut pair = CertKeyPair {
             distributed_private_key: None,
             distributed_cert: distributed_cert.clone(),
             signer: Box::new(true_signing_cert),
+            signees: Vec::new(),
         };
 
         if let Occupied(private_key) = graph
@@ -113,15 +122,10 @@ fn pair_certs_and_key(graph: &mut CryptoGraph) {
                 &distributed_cert.certificate.subject
             );
         } else {
-            // if distributed_cert.certificate.subject == "undecodable" {
-            //     // panic!("hi");
-            // }
             panic!("Public key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}", &distributed_cert.certificate.subject);
         }
 
-        graph
-            .cert_key_pairs
-            .insert(distributed_cert.certificate.clone(), pair);
+        graph.cert_key_pairs.push(pair);
     }
 }
 
