@@ -45,7 +45,9 @@ fn main() {
     create_graph(&mut graph);
 
     for pair in graph.cert_key_pairs {
-        println!("{}", pair);
+        if pair.signer.as_ref().is_none() {
+            println!("{}", pair);
+        }
     }
 }
 

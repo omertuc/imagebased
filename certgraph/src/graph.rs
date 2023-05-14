@@ -144,49 +144,30 @@ pub(crate) struct CertKeyPair {
 
 impl Display for CertKeyPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(signer) = &self.signer.as_ref() {
-            if let Some(distributed_private_key) = &self.distributed_private_key {
-                write!(
-                    f,
-                    "Cert {:03} locations, priv {:03} locations | {} ---> {}",
-                    self.distributed_cert.locations.len(),
-                    distributed_private_key.locations.len(),
-                    self.distributed_cert.certificate.subject,
-                    self.distributed_cert.certificate.issuer
-                        == signer.clone().issuer,
-                )?;
-            } else {
-                write!(
-                    f,
-                    "Cert {:03} locations, NO PRIV | {} ---> {}",
-                    self.distributed_cert.locations.len(),
-                    self.distributed_cert.certificate.subject,
-                    self.distributed_cert.certificate.issuer
-                        == signer.clone().issuer,
-                )?;
-            }
+        if let Some(distributed_private_key) = &self.distributed_private_key {
+            write!(
+                f,
+                "Cert {:03} locations, priv {:03} locations | {}",
+                self.distributed_cert.locations.len(),
+                distributed_private_key.locations.len(),
+                self.distributed_cert.certificate.subject,
+            )?;
         } else {
-            if let Some(distributed_private_key) = &self.distributed_private_key {
-                write!(
-                    f,
-                    "Cert {:03} locations, priv {:03} locations | {} ---> SELF SIGNED",
-                    self.distributed_cert.locations.len(),
-                    distributed_private_key.locations.len(),
-                    self.distributed_cert.certificate.subject,
-                )?;
-            } else {
-                write!(
-                    f,
-                    "Cert {:03} locations, NO PRIV | {} ---> SELF SIGNED",
-                    self.distributed_cert.locations.len(),
-                    self.distributed_cert.certificate.subject,
-                )?;
-            }
+            write!(
+                f,
+                "Cert {:03} locations, NO PRIV | {}",
+                self.distributed_cert.locations.len(),
+                self.distributed_cert.certificate.subject,
+            )?;
         }
 
-        // for signee in self.signees.iter() {
-        //     writeln!(f, "  {}", signee)?;
-        // }
+        if self.signees.len() > 0 {
+            writeln!(f, "")?;
+        }
+
+        for signee in self.signees.iter() {
+            writeln!(f, "- {}", signee)?;
+        }
 
         Ok(())
     }
