@@ -1,6 +1,7 @@
 use crate::locations::Location;
 use bytes::Bytes;
-use rsa::{RsaPrivateKey, RsaPublicKey};
+// use rsa::{RsaPublicKey};
+use rsa::RsaPrivateKey;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -23,7 +24,7 @@ impl std::fmt::Debug for PrivateKey {
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PublicKey {
-    Rsa(RsaPublicKey),
+    // Rsa(RsaPublicKey),
     Raw(Bytes),
     // Dummy,
 }
@@ -31,7 +32,7 @@ pub(crate) enum PublicKey {
 impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Rsa(_) => write!(f, "<rsa_pub>"),
+            // Self::Rsa(_) => write!(f, "<rsa_pub>"),
             Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
             // Self::Dummy => write!(f, "Dummy"),
         }
@@ -113,18 +114,35 @@ impl From<Bytes> for PublicKey {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum Key {
-    PrivateKey(Location, PrivateKey),
-    PublicKey(Location, String),
+#[derive(Debug, Clone)]
+pub struct Locations(pub(crate) HashSet<Location>);
+
+impl AsRef<HashSet<Location>> for Locations {
+    fn as_ref(&self) -> &HashSet<Location> {
+        &self.0
+    }
 }
 
-type Locations = HashSet<Location>;
-type CertAuthor = String;
+impl AsMut<HashSet<Location>> for Locations {
+    fn as_mut(&mut self) -> &mut HashSet<Location> {
+        &mut self.0
+    }
+}
+
+// we cannot do
+impl Display for Locations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locations = self.0.iter().collect::<Vec<_>>();
+        write!(f, "[")?;
+        for location in locations {
+            write!(f, "{}, ", location)?;
+        }
+        write!(f, "]")
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct DistributedPrivateKey {
-    pub(crate) private_key: PrivateKey,
     pub(crate) locations: Locations,
 }
 
@@ -144,22 +162,31 @@ pub(crate) struct CertKeyPair {
 
 impl Display for CertKeyPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(distributed_private_key) = &self.distributed_private_key {
-            write!(
-                f,
-                "Cert {:03} locations, priv {:03} locations | {}",
-                self.distributed_cert.locations.len(),
-                distributed_private_key.locations.len(),
-                self.distributed_cert.certificate.subject,
-            )?;
-        } else {
-            write!(
-                f,
-                "Cert {:03} locations, NO PRIV | {}",
-                self.distributed_cert.locations.len(),
-                self.distributed_cert.certificate.subject,
-            )?;
-        }
+        write!(
+            f,
+            "Cert {:03} locations {}, ",
+            self.distributed_cert.locations.0.len(),
+            self.distributed_cert.locations,
+        )?;
+        write!(
+            f,
+            "{}",
+            if self.distributed_private_key.is_some() {
+                format!(
+                    "priv {:03} locations {}",
+                    self.distributed_private_key
+                        .as_ref()
+                        .unwrap()
+                        .locations
+                        .0
+                        .len(),
+                    self.distributed_private_key.as_ref().unwrap().locations,
+                )
+            } else {
+                "NO PRIV".to_string()
+            }
+        )?;
+        write!(f, " | {}", self.distributed_cert.certificate.subject,)?;
 
         if self.signees.len() > 0 {
             writeln!(f, "")?;
@@ -176,8 +203,6 @@ impl Display for CertKeyPair {
 #[derive(Debug, Clone)]
 pub(crate) struct CryptoGraph {
     pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
-    pub(crate) identity_to_public: HashMap<String, String>,
-    pub(crate) ca_certs: HashSet<String>,
 
     pub(crate) cert_key_pairs: Vec<CertKeyPair>,
 

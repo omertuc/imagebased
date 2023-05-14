@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use graph::{
-    CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, PrivateKey,
-    PublicKey,
+    CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, Locations,
+    PrivateKey, PublicKey,
 };
 use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
@@ -11,11 +11,11 @@ use pkcs1::EncodeRsaPublicKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rules::{IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
+use std::collections::{
+    hash_map::Entry::{Occupied, Vacant},
+    HashMap,
+};
 use std::{
-    collections::{
-        hash_map::Entry::{Occupied, Vacant},
-        HashMap, HashSet,
-    },
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -31,8 +31,6 @@ fn main() {
 
     let mut graph = CryptoGraph {
         public_to_private: HashMap::new(),
-        identity_to_public: HashMap::new(),
-        ca_certs: HashSet::new(),
         root_certs: HashMap::new(),
         cert_key_pairs: Vec::new(),
         private_keys: HashMap::new(),
@@ -309,12 +307,11 @@ fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, locat
     match graph.private_keys.entry(private_part.clone()) {
         Vacant(distributed_private_key) => {
             distributed_private_key.insert(DistributedPrivateKey {
-                private_key: private_part,
-                locations: vec![location.clone()].into_iter().collect(),
+                locations: Locations(vec![location.clone()].into_iter().collect()),
             });
         }
         Occupied(entry) => {
-            entry.into_mut().locations.insert(location.clone());
+            entry.into_mut().locations.0.insert(location.clone());
         }
     }
 }
@@ -352,13 +349,14 @@ fn register_cert(
         Vacant(distributed_cert) => {
             distributed_cert.insert(DistributedCert {
                 certificate: hashable_cert,
-                locations: vec![location.clone()].into_iter().collect(),
+                locations: Locations(vec![location.clone()].into_iter().collect()),
             });
         }
         Occupied(distributed_cert) => {
             distributed_cert
                 .into_mut()
                 .locations
+                .0
                 .insert(location.clone());
         }
     }

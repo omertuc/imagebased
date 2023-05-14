@@ -6,6 +6,23 @@ pub(crate) enum Location {
     Filesystem(FileLocation),
 }
 
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Location::K8s(k8s_location) => write!(
+                f,
+                "k8s:{}:{}",
+                k8s_location.resource_location, k8s_location.yaml_location
+            ),
+            Location::Filesystem(file_location) => write!(
+                f,
+                "file:{}:{}",
+                file_location.file_path, file_location.content_location
+            ),
+        }
+    }
+}
+
 impl Debug for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -33,14 +50,6 @@ impl Location {
                         FileContentLocation::Raw(new_pem_location_info);
                     Self::Filesystem(new_file_location)
                 }
-                FileContentLocation::Yaml(yaml_location) => {
-                    let mut new_yaml_location = yaml_location.clone();
-                    new_yaml_location.pem_location.pem_bundle_index = Some(pem_bundle_index);
-                    let mut new_file_location = file_location.clone();
-                    new_file_location.content_location =
-                        FileContentLocation::Yaml(new_yaml_location);
-                    Self::Filesystem(new_file_location)
-                }
             },
         }
     }
@@ -49,6 +58,15 @@ impl Location {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct PemLocationInfo {
     pub(crate) pem_bundle_index: Option<u64>,
+}
+
+impl std::fmt::Display for PemLocationInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.pem_bundle_index {
+            Some(index) => write!(f, ":pem{}", index),
+            None => write!(f, ""),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -60,13 +78,26 @@ pub(crate) struct FileLocation {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum FileContentLocation {
     Raw(PemLocationInfo),
-    Yaml(YamlLocation),
+}
+
+impl std::fmt::Display for FileContentLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileContentLocation::Raw(pem_location_info) => write!(f, "{}", pem_location_info),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct YamlLocation {
     pub(crate) json_path: String,
     pub(crate) pem_location: PemLocationInfo,
+}
+
+impl std::fmt::Display for YamlLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, ":{}{}", self.json_path, self.pem_location)
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -76,8 +107,26 @@ pub(crate) struct K8sResourceLocation {
     pub(crate) name: String,
 }
 
+impl std::fmt::Display for K8sResourceLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}:{}", self.kind, self.namespace, self.name)
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct K8sLocation {
     pub(crate) resource_location: K8sResourceLocation,
     pub(crate) yaml_location: YamlLocation,
+}
+
+impl std::fmt::Display for K8sLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{}:{}",
+            self.resource_location,
+            self.yaml_location.json_path,
+            self.yaml_location.pem_location.pem_bundle_index.unwrap()
+        )
+    }
 }
