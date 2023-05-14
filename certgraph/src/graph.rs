@@ -1,4 +1,5 @@
 use crate::locations::Location;
+use base64::Engine as _;
 use bytes::Bytes;
 // use rsa::{RsaPublicKey};
 use rsa::RsaPrivateKey;
@@ -198,25 +199,62 @@ impl CertKeyPair {
                     let mut value: Value =
                         serde_yaml::from_str(&contents).expect("failed to parse yaml");
                     let subvalue = value.pointer_mut(path).unwrap();
-                    if let Some(pem_index) = k8slocation.yaml_location.pem_location.pem_bundle_index
-                    {
-                        let pems = pem::parse_many(subvalue.to_string()).unwrap();
-                        let newpem =
-                            pem::parse(self.distributed_cert.certificate.original.encode_pem())
-                                .unwrap();
-                        let newpems = vec![];
 
-                        for (i, pem) in pems.iter().enumerate() {
-                            if i == usize::try_from(pem_index).unwrap() {
-                                newpems.push(newpem);
-                            } else {
-                                newpems.push(pem.clone());
-                            }
+                    if let Value::String(subvalue_string) = subvalue {
+                        let decoded = if k8slocation.resource_location.kind == "Secret" {
+                            String::from_utf8_lossy(
+                                base64::engine::general_purpose::STANDARD
+                                    .decode(subvalue_string.as_bytes())
+                                    .unwrap()
+                                    .as_slice(),
+                            )
+                            .to_string()
+                        } else {
+                            subvalue_string.to_string()
                         }
+                        .clone();
 
-                        let newbundle = pem::encode_many(&newpems);
-                        subvalue = serde_yaml::from_str(&newbundle).unwrap();
+                        if let Some(pem_index) =
+                            k8slocation.yaml_location.pem_location.pem_bundle_index
+                        {
+                            let pems = pem::parse_many(decoded.clone()).unwrap();
+                            let newpem =
+                                pem::parse(self.distributed_cert.certificate.original.encode_pem())
+                                    .unwrap();
+                            let mut newpems = vec![];
+
+                            for (i, pem) in pems.iter().enumerate() {
+                                if i == usize::try_from(pem_index).unwrap() {
+                                    newpems.push(newpem.clone());
+                                } else {
+                                    newpems.push(pem.clone());
+                                }
+                            }
+
+                            let newbundle = pem::encode_many_config(
+                                &newpems,
+                                pem::EncodeConfig {
+                                    line_ending: pem::LineEnding::LF,
+                                },
+                            );
+
+                            let encoded = if k8slocation.resource_location.kind == "Secret" {
+                                base64::engine::general_purpose::STANDARD
+                                    .encode(newbundle.as_bytes())
+                            } else {
+                                newbundle
+                            };
+
+                            *subvalue_string = encoded;
+                        } else {
+                            panic!("shouldn't happen");
+                        }
                     }
+
+                    let newcontents = serde_yaml::to_string(&value).unwrap();
+                    // write to bla so we can diff contents and newcontents
+                    let _ = std::fs::write("/tmp/bla", &newcontents);
+                    let _ = std::fs::write("/tmp/bla2", &contents);
                 }
                 Location::Filesystem(_) => {}
             }

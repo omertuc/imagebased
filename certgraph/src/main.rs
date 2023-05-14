@@ -256,8 +256,8 @@ fn process_k8s_secret_data_entry(
     graph: &mut CryptoGraph,
     k8s_resource_location: &K8sResourceLocation,
 ) {
-    if let Value::String(value) = value {
-        if let Ok(value) = base64::engine::general_purpose::STANDARD.decode(value.as_bytes()) {
+    if let Value::String(string_value) = value {
+        if let Ok(value) = base64::engine::general_purpose::STANDARD.decode(string_value.as_bytes()) {
             let value = String::from_utf8(value).unwrap_or_else(|_| {
                 panic!("Failed to decode base64 {}", key);
             });
@@ -276,7 +276,7 @@ fn process_k8s_secret_data_entry(
                 }),
             );
         } else {
-            panic!("Failed to decode base64 {}", value);
+            panic!("Failed to decode base64 {}", string_value);
         }
     }
 }
