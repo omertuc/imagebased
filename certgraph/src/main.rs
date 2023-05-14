@@ -17,7 +17,7 @@ use std::{
         HashMap, HashSet,
     },
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -62,7 +62,64 @@ fn main() {
 }
 
 fn pair_certs_and_key(graph: &mut CryptoGraph) {
-    dbg!(graph.certs.len());
+    // dbg!(&graph.public_to_private.keys());
+    dbg!(graph.certs.values().for_each(|x| {
+        let y = &x.certificate.public_key;
+        match y {
+            PublicKey::Raw(z) => {
+                let filename = format!("{}", x.certificate.subject);
+
+                // remove slashes
+                let filename = filename.replace("/", "_");
+
+                // prepend wow dir
+                let filename = format!("wow/{}", filename);
+
+                let mut file = fs::File::create(filename).unwrap();
+                file.write(format!("{:#?}", z).as_bytes()).unwrap();
+            }
+            _ => {}
+        }
+    }));
+
+    // dbg!(&graph.public_to_private.keys());
+    graph
+        .public_to_private
+        .iter()
+        .enumerate()
+        .for_each(|(i, (x, y))| {
+            match x {
+                PublicKey::Raw(z) => {
+                    let filename = format!("{}", i);
+
+                    // remove slashes
+                    let filename = filename.replace("/", "_");
+
+                    // prepend wow dir
+                    let filename = format!("bow/{}", filename);
+
+                    let mut file = fs::File::create(filename).unwrap();
+                    file.write(format!("{:#?}", z).as_bytes()).unwrap();
+
+                    file.write(
+                        format!(
+                            "{:#?}",
+                            if let Occupied(distributed_private_key) =
+                                graph.private_keys.entry(y.clone())
+                            {
+                                distributed_private_key.get().clone().locations
+                            } else {
+                                panic!("Private key not found");
+                            }
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                _ => {}
+            }
+        });
+
     for (_hashable_cert, distributed_cert) in &graph.certs {
         if let Occupied(private_key) = graph
             .public_to_private
@@ -104,10 +161,10 @@ fn pair_certs_and_key(graph: &mut CryptoGraph) {
             match distributed_cert.certificate.public_key {
                 PublicKey::Raw(_) => {
                     for location in distributed_cert.locations.iter() {
-                        println!(
-                            "{:#?} {:#?}",
-                            distributed_cert.certificate.original, location
-                        );
+                        // println!(
+                        //     "{:#?} {:#?}",
+                        //     distributed_cert.certificate.original, location
+                        // );
                     }
                     panic!("done");
                 }
@@ -252,8 +309,10 @@ fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Locati
         "RSA PRIVATE KEY" => {
             process_pem_private_key(pem, graph, location);
         }
-        "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "EC PRIVATE KEY"
-        | "RSA SIGNATURE" => {
+        "EC PRIVATE KEY" => {
+            dbg!("Found EC key at {}", location);
+        }
+        "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
             // dbg!("TODO: Handle {} at {}", pem.tag(), location);
         }
         _ => {
@@ -318,6 +377,24 @@ fn register_cert(
     location: &Location,
 ) {
     let hashable_cert = Certificate::from(x509_certificate.clone());
+
+    if rules::EXTERNAL_CERTS.contains(&hashable_cert.subject) {
+        return;
+    }
+
+    if hashable_cert.subject.contains("2006 Entrust") {
+        dbg!("Horror");
+    }
+
+    match hashable_cert.original.key_algorithm().unwrap() {
+        x509_certificate::KeyAlgorithm::Rsa => {}
+        x509_certificate::KeyAlgorithm::Ecdsa(_) => {
+            return;
+        }
+        x509_certificate::KeyAlgorithm::Ed25519 => {
+            return;
+        }
+    }
 
     match graph.certs.entry(hashable_cert.clone()) {
         Vacant(distributed_cert) => {

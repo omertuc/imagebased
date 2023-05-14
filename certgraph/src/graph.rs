@@ -32,7 +32,7 @@ impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rsa(_) => write!(f, "<rsa_pub>"),
-            Self::Raw(_) => write!(f, "<raw_pub>"),
+            Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
             // Self::Dummy => write!(f, "Dummy"),
         }
     }
