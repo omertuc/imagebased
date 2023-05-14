@@ -9,7 +9,7 @@ use locations::{
 };
 use pkcs1::EncodeRsaPublicKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use rules::{EXTERNAL_CERTS, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
+use rules::{IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
 use std::{
     collections::{
@@ -17,7 +17,7 @@ use std::{
         HashMap, HashSet,
     },
     fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -44,13 +44,24 @@ fn main() {
     pair_certs_and_key(&mut graph);
 
     for pair in graph.cert_key_pairs.values() {
-        println!(
-            "Cert {:03} locations, priv {:03} locations | {} ---> {}",
-            pair.distributed_cert.locations.len(),
-            pair.distributed_private_key.locations.len(),
-            pair.distributed_cert.certificate.subject,
-            pair.distributed_cert.certificate.issuer,
-        );
+        if let Some(distributed_private_key) = &pair.distributed_private_key {
+            println!(
+                "Cert {:03} locations, priv {:03} locations | {} ---> {}",
+                pair.distributed_cert.locations.len(),
+                distributed_private_key.locations.len(),
+                pair.distributed_cert.certificate.subject,
+                pair.distributed_cert.certificate.issuer
+                    == pair.signer.as_ref().clone().unwrap().issuer,
+            );
+        } else {
+            println!(
+                "Cert {:03} locations, NO PRIV | {} ---> {}",
+                pair.distributed_cert.locations.len(),
+                pair.distributed_cert.certificate.subject,
+                pair.distributed_cert.certificate.issuer
+                    == pair.signer.as_ref().clone().unwrap().issuer,
+            );
+        }
 
         // for location in pair.distributed_cert.locations.iter() {
         //     println!("{:#?}", location);
@@ -63,57 +74,54 @@ fn main() {
 
 fn pair_certs_and_key(graph: &mut CryptoGraph) {
     for (_hashable_cert, distributed_cert) in &graph.certs {
+        let mut true_signing_cert: Option<Certificate> = None;
+        for potential_signing_cert in graph.certs.values() {
+            if distributed_cert
+                .certificate
+                .original
+                .verify_signed_by_certificate(&potential_signing_cert.certificate.original)
+                .is_ok()
+            {
+                true_signing_cert = Some(potential_signing_cert.certificate.clone())
+            }
+        }
+
+        if true_signing_cert.is_none() {
+            panic!("No signing cert found");
+        }
+
+        let mut pair = CertKeyPair {
+            distributed_private_key: None,
+            distributed_cert: distributed_cert.clone(),
+            signer: Box::new(true_signing_cert),
+        };
+
         if let Occupied(private_key) = graph
             .public_to_private
             .entry(distributed_cert.certificate.public_key.clone())
         {
-            let mut true_signing_cert: Option<Certificate> = None;
-            for potential_signing_cert in graph.certs.values() {
-                if distributed_cert
-                    .certificate
-                    .original
-                    .verify_signed_by_certificate(&potential_signing_cert.certificate.original)
-                    .is_ok()
-                {
-                    true_signing_cert = Some(potential_signing_cert.certificate.clone())
-                }
-            }
-
-            if true_signing_cert.is_none() {
-                panic!("No signing cert found");
-            }
-
             if let Occupied(distributed_private_key) =
                 graph.private_keys.entry(private_key.get().clone())
             {
-                graph.cert_key_pairs.insert(
-                    distributed_cert.certificate.clone(),
-                    CertKeyPair {
-                        distributed_private_key: distributed_private_key.get().clone(),
-                        distributed_cert: distributed_cert.clone(),
-                        signer: Box::new(true_signing_cert),
-                    },
-                );
+                pair.distributed_private_key = Some(distributed_private_key.get().clone());
             } else {
                 panic!("Private key not found");
             }
-        } else if !KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&distributed_cert.certificate.subject)
-            && !EXTERNAL_CERTS.contains(&distributed_cert.certificate.subject)
-        {
-            match distributed_cert.certificate.public_key {
-                PublicKey::Raw(_) => {
-                    for location in distributed_cert.locations.iter() {
-                        // println!(
-                        //     "{:#?} {:#?}",
-                        //     distributed_cert.certificate.original, location
-                        // );
-                    }
-                    panic!("done");
-                }
-                // PublicKey::Dummy => {}
-                PublicKey::Rsa(_) => {}
-            }
+        } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&distributed_cert.certificate.subject) {
+            println!(
+                "Known no public key for {}",
+                &distributed_cert.certificate.subject
+            );
+        } else {
+            // if distributed_cert.certificate.subject == "undecodable" {
+            //     // panic!("hi");
+            // }
+            panic!("Public key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}", &distributed_cert.certificate.subject);
         }
+
+        graph
+            .cert_key_pairs
+            .insert(distributed_cert.certificate.clone(), pair);
     }
 }
 
@@ -252,7 +260,7 @@ fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Locati
             process_pem_private_key(pem, graph, location);
         }
         "EC PRIVATE KEY" => {
-            dbg!("Found EC key at {}", location);
+            println!("Found EC key at {:#?}", location);
         }
         "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
             // dbg!("TODO: Handle {} at {}", pem.tag(), location);
@@ -322,10 +330,6 @@ fn register_cert(
 
     if rules::EXTERNAL_CERTS.contains(&hashable_cert.subject) {
         return;
-    }
-
-    if hashable_cert.subject.contains("2006 Entrust") {
-        dbg!("Horror");
     }
 
     match hashable_cert.original.key_algorithm().unwrap() {

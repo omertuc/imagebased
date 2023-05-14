@@ -28,15 +28,16 @@ lazy_static! {
     // sometime during installation. For us it just means we still have to recreate them, we just
     // don't have to record them back to the filesystem or etcd.
     pub(crate) static ref KNOWN_MISSING_PRIVATE_KEY_CERTS: HashSet<String> = vec![
-        "OU=openshift, CN=admin-kubeconfig-signer",
-        "OU=openshift, CN=kubelet-bootstrap-kubeconfig-signer", // TODO: Verify
-        "OU=openshift, CN=root-ca" // TODO: Verify
+        "CN=admin-kubeconfig-signer, OU=openshift",
+        "CN=kubelet-bootstrap-kubeconfig-signer, OU=openshift", // TODO: Verify
+        "CN=root-ca, OU=openshift" // TODO: Verify
     ]
         .into_iter()
         .map(str::to_string)
         .collect();
 
     pub(crate) static ref EXTERNAL_CERTS: HashSet<String> = vec![
+        "undecodable", // Some CA use Teletex encoding for their subject and our x509 lib doesn't like dealing with that
         "CN=ACCVRAIZ1, OU=PKIACCV, O=ACCV, C=ES",
         "CN=Network Solutions Certificate Authority, O=Network Solutions L.L.C., C=US",
         "CN=IdenTrust Commercial Root CA 1, O=IdenTrust, C=US",

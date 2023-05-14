@@ -70,11 +70,13 @@ impl From<CapturedX509Certificate> for Certificate {
             issuer: cert
                 .issuer_name()
                 .user_friendly_str()
-                .unwrap_or_else(|_| "undecodable".to_string()),
+                .unwrap_or_else(|_error| "undecodable".to_string()),
             subject: cert
                 .subject_name()
                 .user_friendly_str()
-                .unwrap_or_else(|_| "undecodable".to_string()),
+                .unwrap_or_else(|_error| {
+                    return "undecodable".to_string();
+                }),
             public_key: PublicKey::from(cert.public_key_data()),
             original: cert,
         }
@@ -134,9 +136,10 @@ pub(crate) struct DistributedCert {
 
 #[derive(Debug)]
 pub(crate) struct CertKeyPair {
-    pub(crate) distributed_private_key: DistributedPrivateKey,
+    pub(crate) distributed_private_key: Option<DistributedPrivateKey>,
     pub(crate) distributed_cert: DistributedCert,
     pub(crate) signer: Box<Option<Certificate>>,
+    pub(crate) signees: Box<Option<Vec<CertKeyPair>>>,
 }
 
 pub(crate) struct CryptoGraph {
