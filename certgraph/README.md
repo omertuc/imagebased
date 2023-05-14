@@ -39,8 +39,9 @@ mkdir -p dump
 endpoints="--endpoints=127.0.0.1:2379"
 for kind in secrets configmaps; do
     for key in $(etcdctl $endpoints get /kubernetes.io/"$kind"/ --prefix --keys-only); do
+        echo $key
         mkdir -p $(dirname dump/$key)
-        etcdctl $endpoints get --print-value-only $key | ./auger decode > dump/$key.yaml
+        (etcdctl $endpoints get --print-value-only $key | auger decode > dump/$key.yaml)&
     done
 done
 

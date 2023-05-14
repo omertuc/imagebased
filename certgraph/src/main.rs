@@ -37,16 +37,52 @@ fn main() {
         certs: HashMap::new(),
     };
 
+    println!("Reading etcd...");
     process_etcd_dump(&root_dir.join("gathers/first/etcd"), &mut graph);
+    println!("Reading kubernetes dir...");
     process_k8s_dir_dump(&root_dir.join("gathers/first/kubernetes"), &mut graph);
+    println!("Pairing certs and keys...");
     pair_certs_and_key(&mut graph);
+    println!("Creating graph relationships...");
     create_graph(&mut graph);
+    println!("Regenerating certs...");
+    regenerate(&mut graph);
+    println!("Committing changes...");
+    commit(&mut graph);
 
-    for pair in graph.cert_key_pairs {
-        if pair.signer.as_ref().is_none() {
-            println!("{}", pair);
+    // for pair in graph.cert_key_pairs {
+    //     if pair.signer.as_ref().is_none() {
+    //         println!("{}", pair);
+    //     }
+    // }
+}
+
+fn commit(graph: &mut CryptoGraph) {
+    let mut pairs = graph.cert_key_pairs.clone();
+
+    for pair in &mut pairs {
+        if pair.signer.is_some() {
+            continue;
         }
+
+        pair.commit()
     }
+
+    graph.cert_key_pairs = pairs;
+}
+
+fn regenerate(graph: &mut CryptoGraph) {
+    let mut pairs = graph.cert_key_pairs.clone();
+
+    for pair in &mut pairs {
+        if pair.signer.is_some() {
+            continue;
+        }
+
+        pair.regenerate()
+    }
+
+    graph.cert_key_pairs = pairs;
 }
 
 fn create_graph(graph: &mut CryptoGraph) {
@@ -190,7 +226,7 @@ fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph) {
     file.read_to_string(&mut contents)
         .expect("failed to read file");
     let value: Value = serde_yaml::from_str(&contents).expect("failed to parse yaml");
-    scan_k8s_resource(&value, crypto_graph);
+    scan_k8s_resource(&value, &contents, crypto_graph);
 }
 
 fn scan_k8s_secret(
@@ -232,7 +268,7 @@ fn process_k8s_secret_data_entry(
                 &Location::K8s(K8sLocation {
                     resource_location: k8s_resource_location.clone(),
                     yaml_location: YamlLocation {
-                        json_path: format!(".data.\"{key}\""),
+                        json_pointer: format!("/data/{key}"),
                         pem_location: PemLocationInfo {
                             pem_bundle_index: None,
                         },
@@ -264,7 +300,7 @@ fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Locati
             process_pem_private_key(pem, graph, location);
         }
         "EC PRIVATE KEY" => {
-            println!("Found EC key at {:#?}", location);
+            println!("Found EC key at {}", location);
         }
         "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
             // dbg!("TODO: Handle {} at {}", pem.tag(), location);
@@ -308,6 +344,7 @@ fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, locat
         Vacant(distributed_private_key) => {
             distributed_private_key.insert(DistributedPrivateKey {
                 locations: Locations(vec![location.clone()].into_iter().collect()),
+                key: private_part,
             });
         }
         Occupied(entry) => {
@@ -362,13 +399,12 @@ fn register_cert(
     }
 }
 
-fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph) {
-    let _path = get_resource_path(value);
-
+fn scan_k8s_resource(value: &Value, contents: &str, graph: &mut CryptoGraph) {
     let location = K8sResourceLocation {
         namespace: json_tools::read_metadata_string_field(value, "namespace"),
         kind: json_tools::read_string_field(value, "kind"),
         name: json_tools::read_metadata_string_field(value, "name"),
+        contents: contents.to_string(),
     };
 
     match location.kind.as_str() {
@@ -397,7 +433,7 @@ fn scan_configmap(
                             &Location::K8s(K8sLocation {
                                 resource_location: k8s_resource_location.clone(),
                                 yaml_location: YamlLocation {
-                                    json_path: format!(".data.\"{key}\""),
+                                    json_pointer: format!("/data/{key}"),
                                     pem_location: PemLocationInfo {
                                         pem_bundle_index: None,
                                     },
@@ -410,27 +446,4 @@ fn scan_configmap(
             _ => todo!(),
         }
     }
-}
-
-fn get_resource_path(value: &Value) -> std::string::String {
-    if let Some(metadata) = value.as_object().unwrap().get("metadata") {
-        let namespace = if let Some(namespace) = metadata.as_object().unwrap().get("namespace") {
-            namespace.as_str().unwrap()
-        } else {
-            "cluster-scoped"
-        };
-
-        let api_version = json_tools::read_string_field(value, "apiVersion");
-        let kind = json_tools::read_string_field(value, "kind");
-
-        let name = if let Some(name) = metadata.as_object().unwrap().get("name") {
-            name.as_str().unwrap()
-        } else {
-            "<list>"
-        };
-
-        return format!("{}/{}/{}/{}", api_version, kind, namespace, name);
-    }
-
-    panic!("no metadata found");
 }

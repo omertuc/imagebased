@@ -2,6 +2,7 @@ use crate::locations::Location;
 use bytes::Bytes;
 // use rsa::{RsaPublicKey};
 use rsa::RsaPrivateKey;
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -12,12 +13,14 @@ use x509_certificate::CapturedX509Certificate;
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PrivateKey {
     Rsa(RsaPrivateKey),
+    Raw(Bytes),
 }
 
 impl std::fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rsa(_) => write!(f, "<rsa_priv>"),
+            Self::Raw(_) => write!(f, "<raw_priv>"),
         }
     }
 }
@@ -144,6 +147,7 @@ impl Display for Locations {
 #[derive(Clone, Debug)]
 pub(crate) struct DistributedPrivateKey {
     pub(crate) locations: Locations,
+    pub(crate) key: PrivateKey,
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +162,66 @@ pub(crate) struct CertKeyPair {
     pub(crate) distributed_cert: DistributedCert,
     pub(crate) signer: Box<Option<Certificate>>,
     pub(crate) signees: Vec<CertKeyPair>,
+}
+
+impl CertKeyPair {
+    pub fn regenerate(&mut self) {
+        let mut builder = x509_certificate::certificate::X509CertificateBuilder::new(
+            x509_certificate::KeyAlgorithm::Ed25519,
+        );
+
+        builder
+            .subject()
+            .append_common_name_utf8_string("TODO: Copy subject from original cert")
+            .unwrap();
+
+        builder
+            .issuer()
+            .append_common_name_utf8_string("TODO: Copy issuer from originaal cert")
+            .unwrap();
+
+        let (cer, _keypair, document) = builder.create_with_random_keypair().unwrap();
+
+        self.distributed_cert.certificate = Certificate::from(cer);
+
+        if let Some(distributed_private_key) = &mut self.distributed_private_key {
+            distributed_private_key.key = PrivateKey::Raw(Bytes::copy_from_slice(document.as_ref()))
+        }
+    }
+
+    pub fn commit(&self) {
+        for location in self.distributed_cert.locations.0.iter() {
+            match location {
+                Location::K8s(k8slocation) => {
+                    let contents = &k8slocation.resource_location.contents;
+                    let path = &k8slocation.yaml_location.json_pointer;
+                    let mut value: Value =
+                        serde_yaml::from_str(&contents).expect("failed to parse yaml");
+                    let subvalue = value.pointer_mut(path).unwrap();
+                    if let Some(pem_index) = k8slocation.yaml_location.pem_location.pem_bundle_index
+                    {
+                        let pems = pem::parse_many(subvalue.to_string()).unwrap();
+                        let newpem =
+                            pem::parse(self.distributed_cert.certificate.original.encode_pem())
+                                .unwrap();
+                        let newpems = vec![];
+
+                        for (i, pem) in pems.iter().enumerate() {
+                            if i == usize::try_from(pem_index).unwrap() {
+                                newpems.push(newpem);
+                            } else {
+                                newpems.push(pem.clone());
+                            }
+                        }
+
+                        let newbundle = pem::encode_many(&newpems);
+                        subvalue = serde_yaml::from_str(&newbundle).unwrap();
+                    }
+                }
+                Location::Filesystem(_) => {}
+            }
+        }
+    }
 }
 
 impl Display for CertKeyPair {

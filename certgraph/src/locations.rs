@@ -90,21 +90,30 @@ impl std::fmt::Display for FileContentLocation {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct YamlLocation {
-    pub(crate) json_path: String,
+    pub(crate) json_pointer: String,
     pub(crate) pem_location: PemLocationInfo,
 }
 
 impl std::fmt::Display for YamlLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, ":{}{}", self.json_path, self.pem_location)
+        write!(f, ":{}{}", self.json_pointer, self.pem_location)
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct K8sResourceLocation {
     pub(crate) namespace: String,
     pub(crate) kind: String,
     pub(crate) name: String,
+    pub(crate) contents: String,
+}
+
+impl std::hash::Hash for K8sResourceLocation {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.namespace.hash(state);
+        self.kind.hash(state);
+        self.name.hash(state);
+    }
 }
 
 impl std::fmt::Display for K8sResourceLocation {
@@ -125,7 +134,7 @@ impl std::fmt::Display for K8sLocation {
             f,
             "{}/{}:{}",
             self.resource_location,
-            self.yaml_location.json_path,
+            self.yaml_location.json_pointer,
             self.yaml_location.pem_location.pem_bundle_index.unwrap()
         )
     }
