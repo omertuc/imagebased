@@ -22,7 +22,7 @@ store from a cluster's mounted qcow2 disk image), along with a manually copied
 Eventually it (or a similar tool) will run during startup to re-configure the
 lab-cluster's image before kubelet and other k8s components start
 
-## Generate dumps from qcow2
+## Prepare etcd and `/etc/kubernetes` dir
 
 This script demonstates how you can run the etcd server mentioned above and
 copy the `/etc/kubernetes` dir from the qcow2 disk image of a freshly installed
