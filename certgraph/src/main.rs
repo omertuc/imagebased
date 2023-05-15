@@ -1,5 +1,5 @@
 use base64::Engine as _;
-use etcd_client::Client;
+use etcd_client::{Client, GetOptions};
 use graph::{
     CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, Locations,
     PrivateKey, PublicKey,
@@ -26,6 +26,7 @@ mod graph;
 mod json_tools;
 mod locations;
 mod rules;
+mod k8s_etcd;
 
 #[tokio::main]
 async fn main() -> Result<(), ()> {
@@ -38,9 +39,10 @@ async fn main() -> Result<(), ()> {
         private_keys: HashMap::new(),
         certs: HashMap::new(),
     };
+    let mut client = Client::connect(["localhost:2379"], None).await.unwrap();
 
     println!("Reading etcd...");
-    process_etcd_dump(&root_dir.join("gathers/first/etcd"), &mut graph);
+    process_etcd(client, &mut graph);
     println!("Reading kubernetes dir...");
     process_k8s_dir_dump(&root_dir.join("gathers/first/kubernetes"), &mut graph);
     println!("Pairing certs and keys...");
@@ -52,19 +54,17 @@ async fn main() -> Result<(), ()> {
     println!("Committing changes...");
     commit(&mut graph).await;
 
-     for pair in graph.cert_key_pairs {
-         if pair.signer.as_ref().is_none() {
-             println!("{}", pair);
-         }
-     }
-    
+    for pair in graph.cert_key_pairs {
+        if pair.signer.as_ref().is_none() {
+            println!("{}", pair);
+        }
+    }
+
     Ok(())
 }
 
-async fn commit(graph: &mut CryptoGraph) {
+async fn commit(client: &mut Client, graph: &mut CryptoGraph) {
     let mut pairs = graph.cert_key_pairs.clone();
-
-    let mut client = Client::connect(["localhost:2379"], None).await.unwrap();
 
     for pair in &mut pairs {
         if pair.signer.is_some() {
@@ -181,8 +181,8 @@ fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
         .collect::<Vec<_>>()
 }
 
-fn process_etcd_dump(etcd_dump_dir: &Path, graph: &mut CryptoGraph) {
-    process_k8s_yamls(etcd_dump_dir, graph);
+fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
+    process_k8s_yamls(client, graph);
 }
 
 fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph) {
@@ -190,8 +190,8 @@ fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph) {
     process_pems(k8s_dir, graph);
 }
 
-fn process_k8s_yamls(yamls_dir: &Path, graph: &mut CryptoGraph) {
-    let all_yaml_files = globvec(yamls_dir, "**/*.yaml");
+fn process_k8s_yamls(client: &mut Client, graph: &mut CryptoGraph) {
+    let keys = client.get("/kubernetes.io/", Some(GetOptions::new().with_prefix()));
 
     all_yaml_files.iter().for_each(|yaml_path| {
         process_k8s_yaml(yaml_path.to_path_buf(), graph);

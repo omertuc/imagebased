@@ -36,6 +36,12 @@ sudo qemu-nbd --connect=/dev/nbd0 model.qcow2
 mkdir -p sno_disk
 sudo mount /dev/nbd0p4 sno_disk
 
+# sudo qemu-nbd --disconnect model.qcow2
+# sudo qemu-nbd --disconnect /dev/nbd0 
+# sudo umount sno_disk
+# sudo rm -rf model.qcow2 sno_disk
+# sudo cp ../model/model.qcow2 .
+
 # Run etcd
 RELEASE_IMAGE=quay.io/openshift-release-dev/ocp-release:4.12.2-x86_64
 ETCD_IMAGE="$(oc adm release extract --from="$RELEASE_IMAGE" --file=image-references | jq '.spec.tags[] | select(.name == "etcd").from.name' -r)"

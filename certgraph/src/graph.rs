@@ -2,18 +2,12 @@ use crate::locations::Location;
 use base64::Engine as _;
 use bytes::Bytes;
 use etcd_client::Client;
-// use rsa::{RsaPublicKey};
 use rsa::RsaPrivateKey;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     hash::{Hash, Hasher},
-    process::Stdio,
-};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
 };
 use x509_certificate::CapturedX509Certificate;
 
@@ -200,7 +194,7 @@ impl CertKeyPair {
         for location in self.distributed_cert.locations.0.iter() {
             match location {
                 Location::K8s(k8slocation) => {
-                    let decoded_etcd_value = etcd_get(client, k8slocation).await;
+                    let decoded_etcd_value = k8s_etcd::etcd_get(client, k8slocation).await;
 
                     let path = &k8slocation.yaml_location.json_pointer;
                     let mut value: Value =
@@ -264,84 +258,12 @@ impl CertKeyPair {
 
                     let newcontents = serde_yaml::to_string(&value).unwrap();
 
-                    etcd_put(client, k8slocation, newcontents.as_bytes().to_vec()).await;
+                    k8s_etcd::etcd_put(client, k8slocation, newcontents.as_bytes().to_vec()).await;
                 }
                 Location::Filesystem(_) => {}
             }
         }
     }
-}
-
-async fn etcd_get(client: &mut Client, k8slocation: &crate::locations::K8sLocation) -> Vec<u8> {
-    let get_result = client
-        .get(
-            format!(
-                "/kubernetes.io/{}s/{}/{}",
-                k8slocation.resource_location.kind.to_lowercase(),
-                k8slocation.resource_location.namespace,
-                k8slocation.resource_location.name,
-            ),
-            None,
-        )
-        .await
-        .unwrap();
-    let raw_etcd_value = get_result.kvs().first().unwrap().value();
-
-    let mut command = Command::new("auger")
-        .arg("decode")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    command
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(raw_etcd_value)
-        .await
-        .unwrap();
-
-    command.wait_with_output().await.unwrap().stdout
-}
-
-async fn etcd_put(
-    client: &mut Client,
-    k8slocation: &crate::locations::K8sLocation,
-    value: Vec<u8>,
-) {
-    let command = Command::new("auger")
-        .arg("encode")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("failed to execute auger");
-    let mut encoded_etcd_value = vec![];
-    command
-        .stdin
-        .unwrap()
-        .write_all(value.as_slice())
-        .await
-        .unwrap();
-    command
-        .stdout
-        .unwrap()
-        .read_to_end(&mut encoded_etcd_value)
-        .await
-        .unwrap();
-
-    client
-        .put(
-            format!(
-                "/kubernetes.io/{}s/{}/{}",
-                k8slocation.resource_location.kind.to_lowercase(),
-                k8slocation.resource_location.namespace,
-                k8slocation.resource_location.name,
-            ),
-            String::from_utf8_lossy(&encoded_etcd_value).to_string(),
-            None,
-        )
-        .await
-        .unwrap();
 }
 
 impl Display for CertKeyPair {
@@ -350,7 +272,8 @@ impl Display for CertKeyPair {
             f,
             "Cert {:03} locations {}, ",
             self.distributed_cert.locations.0.len(),
-            self.distributed_cert.locations,
+            "<>",
+            // self.distributed_cert.locations,
         )?;
         write!(
             f,
@@ -364,7 +287,8 @@ impl Display for CertKeyPair {
                         .locations
                         .0
                         .len(),
-                    self.distributed_private_key.as_ref().unwrap().locations,
+                    // self.distributed_private_key.as_ref().unwrap().locations,
+                    "<>",
                 )
             } else {
                 "NO PRIV".to_string()
