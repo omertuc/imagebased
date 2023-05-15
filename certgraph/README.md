@@ -1,13 +1,15 @@
 A tool to regenerate all certificates in a cluster (both in the etcd database
 and static-pod resources) before it starts. Works by scanning the existing
 certificates/keys, understanding how they relate, and replacing them in an
-identical structure, optionally with a different configurable certificate
-CN/SAN.
+identical structure, but with newly randomly generated keys and sometimes
+different configurable certificate CN/SAN.
 
 # Why
 
 Part of the effort to allow users to install a SNO cluster once in a lab, then
-copy its disk image for immediate deployment in many different sites.
+copy its disk image for immediate deployment in many different sites. The new
+cluster will thus have its own independent secret keys and its certificates
+will be valid for the correct CN/SAN.
 
 # Currently
 
