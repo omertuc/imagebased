@@ -286,26 +286,22 @@ async fn etcd_get(client: &mut Client, k8slocation: &crate::locations::K8sLocati
         .await
         .unwrap();
     let raw_etcd_value = get_result.kvs().first().unwrap().value();
-    let command = Command::new("auger")
+
+    let mut command = Command::new("auger")
         .arg("decode")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("failed to execute auger");
+        .unwrap();
     command
         .stdin
+        .take()
         .unwrap()
         .write_all(raw_etcd_value)
         .await
         .unwrap();
-    let mut decoded_etcd_value = vec![];
-    command
-        .stdout
-        .unwrap()
-        .read_to_end(&mut decoded_etcd_value)
-        .await
-        .unwrap();
-    decoded_etcd_value
+
+    command.wait_with_output().await.unwrap().stdout
 }
 
 async fn etcd_put(

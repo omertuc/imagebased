@@ -52,12 +52,12 @@ async fn main() -> Result<(), ()> {
     println!("Committing changes...");
     commit(&mut graph).await;
 
-    // for pair in graph.cert_key_pairs {
-    //     if pair.signer.as_ref().is_none() {
-    //         println!("{}", pair);
-    //     }
-    // }
-    //
+     for pair in graph.cert_key_pairs {
+         if pair.signer.as_ref().is_none() {
+             println!("{}", pair);
+         }
+     }
+    
     Ok(())
 }
 
