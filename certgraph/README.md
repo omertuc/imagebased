@@ -1,7 +1,7 @@
 
 # Goal
 
-A tool to regenerate all certificates in a cluster (both in the etcd database and static-pod resources) before it starts. Works by scanning the existing certificates/keys, understanding how they relate, and replacing them in an identical structure, optionally with a cert domain name.
+A tool to regenerate all certificates in a cluster (both in the etcd database and static-pod resources) before it starts. Works by scanning the existing certificates/keys, understanding how they relate, and replacing them in an identical structure, optionally with a different configurable certificate CN/SAN.
 
 # Why
 
