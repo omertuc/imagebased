@@ -9,7 +9,7 @@ Part of the effort to allow users to install a cluster once in a lab, then copy 
 
 # Currently
 
-Currently it operates offline on dumps generated from a cluster's disk image, it's still very buggy / work-in-progress
+Currently it operates against a manually ran etcd server (backed by an etcd store from a cluster's mounted qcow2 disk image), along with a manually copied `/etc/kubernetes` from that same disk. It's still very buggy / work-in-progress
 
 # Eventually
 
