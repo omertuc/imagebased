@@ -24,9 +24,9 @@ use std::{
 
 mod graph;
 mod json_tools;
+mod k8s_etcd;
 mod locations;
 mod rules;
-mod k8s_etcd;
 
 #[tokio::main]
 async fn main() -> Result<(), ()> {
@@ -42,7 +42,7 @@ async fn main() -> Result<(), ()> {
     let mut client = Client::connect(["localhost:2379"], None).await.unwrap();
 
     println!("Reading etcd...");
-    process_etcd(client, &mut graph);
+    process_etcd(&mut client, &mut graph).await;
     println!("Reading kubernetes dir...");
     process_k8s_dir_dump(&root_dir.join("gathers/first/kubernetes"), &mut graph);
     println!("Pairing certs and keys...");
@@ -52,7 +52,7 @@ async fn main() -> Result<(), ()> {
     println!("Regenerating certs...");
     regenerate(&mut graph);
     println!("Committing changes...");
-    commit(&mut graph).await;
+    commit(&mut client, &mut graph).await;
 
     for pair in graph.cert_key_pairs {
         if pair.signer.as_ref().is_none() {
@@ -71,7 +71,7 @@ async fn commit(client: &mut Client, graph: &mut CryptoGraph) {
             continue;
         }
 
-        pair.commit(&mut client).await;
+        pair.commit(client).await;
     }
 
     graph.cert_key_pairs = pairs;
@@ -181,21 +181,58 @@ fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
         .collect::<Vec<_>>()
 }
 
-fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
-    process_k8s_yamls(client, graph);
+async fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
+    let get_options = GetOptions::new()
+        .with_prefix()
+        .with_limit(0)
+        .with_keys_only();
+
+    let secret_keys = client
+        .get("/kubernetes.io/secrets", Some(get_options.clone()))
+        .await
+        .expect("Couldn't get secrets list, is etcd down?");
+
+    let configmap_keys = client
+        .get("/kubernetes.io/configmaps", Some(get_options))
+        .await
+        .expect("Couldn't get configmaps list, is etcd down?");
+
+    for key in configmap_keys.kvs() {
+        process_etcd_key(client, key, graph).await;
+    }
+
+    for key in secret_keys.kvs() {
+        process_etcd_key(client, key, graph).await;
+    }
+
+    // all_yaml_files.iter().for_each(|yaml_path| {
+    //     process_k8s_etcd_key(yaml_path.to_path_buf(), graph);
+    // });
+}
+
+async fn process_etcd_key(
+    client: &mut Client,
+    key: &etcd_client::KeyValue,
+    graph: &mut CryptoGraph,
+) {
+    let contents = k8s_etcd::etcd_get(client, key.key_str().unwrap()).await;
+    let value: Value = serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
+    let value = &value;
+    let location = K8sResourceLocation {
+        namespace: json_tools::read_metadata_string_field(value, "namespace"),
+        kind: json_tools::read_string_field(value, "kind"),
+        name: json_tools::read_metadata_string_field(value, "name"),
+    };
+    match location.kind.as_str() {
+        "Secret" => scan_k8s_secret(value, graph, &location),
+        "ConfigMap" => scan_configmap(value, graph, &location),
+        _ => (),
+    }
 }
 
 fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph) {
     // process_k8s_yamls(k8s_dir, graph, allow_incomplete);
     process_pems(k8s_dir, graph);
-}
-
-fn process_k8s_yamls(client: &mut Client, graph: &mut CryptoGraph) {
-    let keys = client.get("/kubernetes.io/", Some(GetOptions::new().with_prefix()));
-
-    all_yaml_files.iter().for_each(|yaml_path| {
-        process_k8s_yaml(yaml_path.to_path_buf(), graph);
-    });
 }
 
 fn process_pems(k8s_dir: &Path, graph: &mut CryptoGraph) {
@@ -224,15 +261,6 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph) {
             }),
         }),
     );
-}
-
-fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph) {
-    let mut file = fs::File::open(yaml_path).expect("failed to open file");
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .expect("failed to read file");
-    let value: Value = serde_yaml::from_str(&contents).expect("failed to parse yaml");
-    scan_k8s_resource(&value, crypto_graph);
 }
 
 fn scan_k8s_secret(
@@ -403,20 +431,6 @@ fn register_cert(
                 .0
                 .insert(location.clone());
         }
-    }
-}
-
-fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph) {
-    let location = K8sResourceLocation {
-        namespace: json_tools::read_metadata_string_field(value, "namespace"),
-        kind: json_tools::read_string_field(value, "kind"),
-        name: json_tools::read_metadata_string_field(value, "name"),
-    };
-
-    match location.kind.as_str() {
-        "Secret" => scan_k8s_secret(value, graph, &location),
-        "ConfigMap" => scan_configmap(value, graph, &location),
-        _ => (),
     }
 }
 

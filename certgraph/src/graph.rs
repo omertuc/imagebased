@@ -1,4 +1,4 @@
-use crate::locations::Location;
+use crate::{k8s_etcd, locations::Location};
 use base64::Engine as _;
 use bytes::Bytes;
 use etcd_client::Client;
@@ -194,7 +194,9 @@ impl CertKeyPair {
         for location in self.distributed_cert.locations.0.iter() {
             match location {
                 Location::K8s(k8slocation) => {
-                    let decoded_etcd_value = k8s_etcd::etcd_get(client, k8slocation).await;
+                    let decoded_etcd_value =
+                        k8s_etcd::etcd_get(client, &k8s_etcd::k8slocation_to_etcd_key(k8slocation))
+                            .await;
 
                     let path = &k8slocation.yaml_location.json_pointer;
                     let mut value: Value =
