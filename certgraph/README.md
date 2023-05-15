@@ -1,11 +1,19 @@
 
 # Goal
 
-A tool to regenerate all certificates in a cluster before it starts. Works by scanning the existing certificates/keys, understanding how they relate, and replacing them in an identical structure.
+A tool to regenerate all certificates in a cluster before it starts. Works by scanning the existing certificates/keys, understanding how they relate, and replacing them in an identical structure, optionally with a cert domain name.
+
+# Why
+
+Part of the effort to allow users to install a cluster once in a lab, then copy its image for immediate deployment in many different sites.
 
 # Currently
 
-Currently it operates offline on dumps generated from a cluster's disk image
+Currently it operates offline on dumps generated from a cluster's disk image, it's still very buggy / work-in-progress
+
+# Eventually
+
+Eventually it (or a similar tool) will run during startup to re-configure the lab-cluster's image before kubelet and other k8s components start
 
 ## Generate dumps from qcow2
 
