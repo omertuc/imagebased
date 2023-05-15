@@ -1,23 +1,30 @@
-
-# Goal
-
-A tool to regenerate all certificates in a cluster (both in the etcd database and static-pod resources) before it starts. Works by scanning the existing certificates/keys, understanding how they relate, and replacing them in an identical structure, optionally with a different configurable certificate CN/SAN.
+A tool to regenerate all certificates in a cluster (both in the etcd database
+and static-pod resources) before it starts. Works by scanning the existing
+certificates/keys, understanding how they relate, and replacing them in an
+identical structure, optionally with a different configurable certificate
+CN/SAN.
 
 # Why
 
-Part of the effort to allow users to install a cluster once in a lab, then copy its image for immediate deployment in many different sites.
+Part of the effort to allow users to install a SNO cluster once in a lab, then
+copy its disk image for immediate deployment in many different sites.
 
 # Currently
 
-Currently it operates against a manually ran etcd server (backed by an etcd store from a cluster's mounted qcow2 disk image), along with a manually copied `/etc/kubernetes` from that same disk. It's still very buggy / work-in-progress
+Currently it operates against a manually ran etcd server (backed by an etcd
+store from a cluster's mounted qcow2 disk image), along with a manually copied
+`/etc/kubernetes` from that same disk. It's still very buggy / work-in-progress
 
 # Eventually
 
-Eventually it (or a similar tool) will run during startup to re-configure the lab-cluster's image before kubelet and other k8s components start
+Eventually it (or a similar tool) will run during startup to re-configure the
+lab-cluster's image before kubelet and other k8s components start
 
 ## Generate dumps from qcow2
 
-This script demonstates how you can create the dumps mentioned above from a freshly installed SNO disk qcow2 image
+This script demonstates how you can run the etcd server mentioned above and
+copy the `/etc/kubernetes` dir from the qcow2 disk image of a freshly installed
+SNO cluster
 
 ### Requirements
 
