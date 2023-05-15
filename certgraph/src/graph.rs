@@ -1,6 +1,7 @@
 use crate::locations::Location;
 use base64::Engine as _;
 use bytes::Bytes;
+use etcd_client::Client;
 // use rsa::{RsaPublicKey};
 use rsa::RsaPrivateKey;
 use serde_json::Value;
@@ -8,6 +9,11 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     hash::{Hash, Hasher},
+    process::Stdio,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
 };
 use x509_certificate::CapturedX509Certificate;
 
@@ -190,76 +196,156 @@ impl CertKeyPair {
         }
     }
 
-    pub fn commit(&self) {
+    pub async fn commit(&self, client: &mut Client) {
         for location in self.distributed_cert.locations.0.iter() {
             match location {
                 Location::K8s(k8slocation) => {
-                    let contents = &k8slocation.resource_location.contents;
+                    let decoded_etcd_value = etcd_get(client, k8slocation).await;
+
                     let path = &k8slocation.yaml_location.json_pointer;
                     let mut value: Value =
-                        serde_yaml::from_str(&contents).expect("failed to parse yaml");
-                    let subvalue = value.pointer_mut(path).unwrap();
-
-                    if let Value::String(subvalue_string) = subvalue {
-                        let decoded = if k8slocation.resource_location.kind == "Secret" {
-                            String::from_utf8_lossy(
-                                base64::engine::general_purpose::STANDARD
-                                    .decode(subvalue_string.as_bytes())
-                                    .unwrap()
-                                    .as_slice(),
-                            )
-                            .to_string()
-                        } else {
-                            subvalue_string.to_string()
-                        }
-                        .clone();
-
-                        if let Some(pem_index) =
-                            k8slocation.yaml_location.pem_location.pem_bundle_index
-                        {
-                            let pems = pem::parse_many(decoded.clone()).unwrap();
-                            let newpem =
-                                pem::parse(self.distributed_cert.certificate.original.encode_pem())
-                                    .unwrap();
-                            let mut newpems = vec![];
-
-                            for (i, pem) in pems.iter().enumerate() {
-                                if i == usize::try_from(pem_index).unwrap() {
-                                    newpems.push(newpem.clone());
-                                } else {
-                                    newpems.push(pem.clone());
-                                }
-                            }
-
-                            let newbundle = pem::encode_many_config(
-                                &newpems,
-                                pem::EncodeConfig {
-                                    line_ending: pem::LineEnding::LF,
-                                },
-                            );
-
-                            let encoded = if k8slocation.resource_location.kind == "Secret" {
-                                base64::engine::general_purpose::STANDARD
-                                    .encode(newbundle.as_bytes())
+                        serde_yaml::from_str(&String::from_utf8_lossy(&decoded_etcd_value))
+                            .expect("failed to parse yaml");
+                    if let Some(subvalue) = value.pointer_mut(path) {
+                        if let Value::String(subvalue_string) = subvalue {
+                            let decoded = if k8slocation.resource_location.kind == "Secret" {
+                                String::from_utf8_lossy(
+                                    base64::engine::general_purpose::STANDARD
+                                        .decode(subvalue_string.as_bytes())
+                                        .unwrap()
+                                        .as_slice(),
+                                )
+                                .to_string()
                             } else {
-                                newbundle
-                            };
+                                subvalue_string.to_string()
+                            }
+                            .clone();
 
-                            *subvalue_string = encoded;
-                        } else {
-                            panic!("shouldn't happen");
+                            if let Some(pem_index) =
+                                k8slocation.yaml_location.pem_location.pem_bundle_index
+                            {
+                                let pems = pem::parse_many(decoded.clone()).unwrap();
+                                let newpem = pem::parse(
+                                    self.distributed_cert.certificate.original.encode_pem(),
+                                )
+                                .unwrap();
+                                let mut newpems = vec![];
+
+                                for (i, pem) in pems.iter().enumerate() {
+                                    if i == usize::try_from(pem_index).unwrap() {
+                                        newpems.push(newpem.clone());
+                                    } else {
+                                        newpems.push(pem.clone());
+                                    }
+                                }
+
+                                let newbundle = pem::encode_many_config(
+                                    &newpems,
+                                    pem::EncodeConfig {
+                                        line_ending: pem::LineEnding::LF,
+                                    },
+                                );
+
+                                let encoded = if k8slocation.resource_location.kind == "Secret" {
+                                    base64::engine::general_purpose::STANDARD
+                                        .encode(newbundle.as_bytes())
+                                } else {
+                                    newbundle
+                                };
+
+                                *subvalue_string = encoded;
+                            } else {
+                                panic!("shouldn't happen");
+                            }
                         }
+                    } else {
+                        panic!("shouldn't happen");
                     }
 
                     let newcontents = serde_yaml::to_string(&value).unwrap();
-                    // write to bla so we can diff contents and newcontents
-                    let _ = std::fs::write("/tmp/bla", &newcontents);
-                    let _ = std::fs::write("/tmp/bla2", &contents);
+
+                    etcd_put(client, k8slocation, newcontents.as_bytes().to_vec()).await;
                 }
                 Location::Filesystem(_) => {}
             }
         }
     }
+}
+
+async fn etcd_get(client: &mut Client, k8slocation: &crate::locations::K8sLocation) -> Vec<u8> {
+    let get_result = client
+        .get(
+            format!(
+                "/kubernetes.io/{}s/{}/{}",
+                k8slocation.resource_location.kind.to_lowercase(),
+                k8slocation.resource_location.namespace,
+                k8slocation.resource_location.name,
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let raw_etcd_value = get_result.kvs().first().unwrap().value();
+    let command = Command::new("auger")
+        .arg("decode")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to execute auger");
+    command
+        .stdin
+        .unwrap()
+        .write_all(raw_etcd_value)
+        .await
+        .unwrap();
+    let mut decoded_etcd_value = vec![];
+    command
+        .stdout
+        .unwrap()
+        .read_to_end(&mut decoded_etcd_value)
+        .await
+        .unwrap();
+    decoded_etcd_value
+}
+
+async fn etcd_put(
+    client: &mut Client,
+    k8slocation: &crate::locations::K8sLocation,
+    value: Vec<u8>,
+) {
+    let command = Command::new("auger")
+        .arg("encode")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to execute auger");
+    let mut encoded_etcd_value = vec![];
+    command
+        .stdin
+        .unwrap()
+        .write_all(value.as_slice())
+        .await
+        .unwrap();
+    command
+        .stdout
+        .unwrap()
+        .read_to_end(&mut encoded_etcd_value)
+        .await
+        .unwrap();
+
+    client
+        .put(
+            format!(
+                "/kubernetes.io/{}s/{}/{}",
+                k8slocation.resource_location.kind.to_lowercase(),
+                k8slocation.resource_location.namespace,
+                k8slocation.resource_location.name,
+            ),
+            String::from_utf8_lossy(&encoded_etcd_value).to_string(),
+            None,
+        )
+        .await
+        .unwrap();
 }
 
 impl Display for CertKeyPair {

@@ -105,7 +105,6 @@ pub(crate) struct K8sResourceLocation {
     pub(crate) namespace: String,
     pub(crate) kind: String,
     pub(crate) name: String,
-    pub(crate) contents: String,
 }
 
 impl std::hash::Hash for K8sResourceLocation {

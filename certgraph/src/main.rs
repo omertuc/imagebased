@@ -1,4 +1,5 @@
 use base64::Engine as _;
+use etcd_client::Client;
 use graph::{
     CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, Locations,
     PrivateKey, PublicKey,
@@ -26,7 +27,8 @@ mod json_tools;
 mod locations;
 mod rules;
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), ()> {
     let root_dir = PathBuf::from(".");
 
     let mut graph = CryptoGraph {
@@ -48,24 +50,28 @@ fn main() {
     println!("Regenerating certs...");
     regenerate(&mut graph);
     println!("Committing changes...");
-    commit(&mut graph);
+    commit(&mut graph).await;
 
     // for pair in graph.cert_key_pairs {
     //     if pair.signer.as_ref().is_none() {
     //         println!("{}", pair);
     //     }
     // }
+    //
+    Ok(())
 }
 
-fn commit(graph: &mut CryptoGraph) {
+async fn commit(graph: &mut CryptoGraph) {
     let mut pairs = graph.cert_key_pairs.clone();
+
+    let mut client = Client::connect(["localhost:2379"], None).await.unwrap();
 
     for pair in &mut pairs {
         if pair.signer.is_some() {
             continue;
         }
 
-        pair.commit()
+        pair.commit(&mut client).await;
     }
 
     graph.cert_key_pairs = pairs;
@@ -226,7 +232,7 @@ fn process_k8s_yaml(yaml_path: PathBuf, crypto_graph: &mut CryptoGraph) {
     file.read_to_string(&mut contents)
         .expect("failed to read file");
     let value: Value = serde_yaml::from_str(&contents).expect("failed to parse yaml");
-    scan_k8s_resource(&value, &contents, crypto_graph);
+    scan_k8s_resource(&value, crypto_graph);
 }
 
 fn scan_k8s_secret(
@@ -257,7 +263,8 @@ fn process_k8s_secret_data_entry(
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Value::String(string_value) = value {
-        if let Ok(value) = base64::engine::general_purpose::STANDARD.decode(string_value.as_bytes()) {
+        if let Ok(value) = base64::engine::general_purpose::STANDARD.decode(string_value.as_bytes())
+        {
             let value = String::from_utf8(value).unwrap_or_else(|_| {
                 panic!("Failed to decode base64 {}", key);
             });
@@ -399,12 +406,11 @@ fn register_cert(
     }
 }
 
-fn scan_k8s_resource(value: &Value, contents: &str, graph: &mut CryptoGraph) {
+fn scan_k8s_resource(value: &Value, graph: &mut CryptoGraph) {
     let location = K8sResourceLocation {
         namespace: json_tools::read_metadata_string_field(value, "namespace"),
         kind: json_tools::read_string_field(value, "kind"),
         name: json_tools::read_metadata_string_field(value, "name"),
-        contents: contents.to_string(),
     };
 
     match location.kind.as_str() {
