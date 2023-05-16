@@ -4,6 +4,7 @@ use graph::{
     CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, Locations,
     PrivateKey, PublicKey,
 };
+use indicatif::{ProgressBar, ProgressStyle};
 use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
     YamlLocation,
@@ -66,7 +67,10 @@ async fn main() -> Result<(), ()> {
 async fn commit(client: &mut Client, graph: &mut CryptoGraph) {
     let mut pairs = graph.cert_key_pairs.clone();
 
+    let bar = ProgressBar::new(pairs.len() as u64).with_message("Committing key/cert pairs...");
+    style_bar(&bar);
     for pair in &mut pairs {
+        bar.inc(1);
         if pair.signer.is_some() {
             continue;
         }
@@ -197,25 +201,34 @@ async fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
         .await
         .expect("Couldn't get configmaps list, is etcd down?");
 
+    let bar = ProgressBar::new(configmap_keys.kvs().into_iter().len() as u64)
+        .with_message("Processing etcd configmaps");
+    style_bar(&bar);
     for key in configmap_keys.kvs() {
-        process_etcd_key(client, key, graph).await;
+        process_etcd_key(client, key.key_str().unwrap(), graph).await;
+        bar.inc(1);
     }
 
+    let bar = ProgressBar::new(secret_keys.kvs().into_iter().len() as u64)
+        .with_message("Processing etcd secrets");
+    style_bar(&bar);
     for key in secret_keys.kvs() {
-        process_etcd_key(client, key, graph).await;
+        process_etcd_key(client, key.key_str().unwrap(), graph).await;
+        bar.inc(1);
     }
-
-    // all_yaml_files.iter().for_each(|yaml_path| {
-    //     process_k8s_etcd_key(yaml_path.to_path_buf(), graph);
-    // });
 }
 
-async fn process_etcd_key(
-    client: &mut Client,
-    key: &etcd_client::KeyValue,
-    graph: &mut CryptoGraph,
-) {
-    let contents = k8s_etcd::etcd_get(client, key.key_str().unwrap()).await;
+fn style_bar(bar: &ProgressBar) {
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+}
+
+async fn process_etcd_key(client: &mut Client, key: &str, graph: &mut CryptoGraph) {
+    let contents = k8s_etcd::etcd_get(client, key).await;
     let value: Value = serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
     let value = &value;
     let location = K8sResourceLocation {

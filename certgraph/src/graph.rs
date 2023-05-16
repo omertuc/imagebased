@@ -1,7 +1,8 @@
-use crate::{k8s_etcd, locations::Location};
+use crate::{k8s_etcd, locations::Location, style_bar};
 use base64::Engine as _;
 use bytes::Bytes;
 use etcd_client::Client;
+use indicatif::ProgressBar;
 use rsa::RsaPrivateKey;
 use serde_json::Value;
 use std::{
@@ -178,7 +179,7 @@ impl CertKeyPair {
 
         builder
             .issuer()
-            .append_common_name_utf8_string("TODO: Copy issuer from originaal cert")
+            .append_common_name_utf8_string("TODO: Copy issuer from original cert")
             .unwrap();
 
         let (cer, _keypair, document) = builder.create_with_random_keypair().unwrap();
@@ -191,7 +192,11 @@ impl CertKeyPair {
     }
 
     pub async fn commit(&self, client: &mut Client) {
+        let bar = ProgressBar::new(self.distributed_cert.locations.0.len() as u64)
+            .with_message("Processing pair locations...");
+        style_bar(&bar);
         for location in self.distributed_cert.locations.0.iter() {
+            bar.inc(1);
             match location {
                 Location::K8s(k8slocation) => {
                     let decoded_etcd_value =
