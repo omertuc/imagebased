@@ -56,17 +56,17 @@ pub(crate) async fn etcd_put(
     k8slocation: &crate::locations::K8sLocation,
     value: Vec<u8>,
 ) {
-    // client
-    //     .put(
-    //         format!(
-    //             "/kubernetes.io/{}s/{}/{}",
-    //             k8slocation.resource_location.kind.to_lowercase(),
-    //             k8slocation.resource_location.namespace,
-    //             k8slocation.resource_location.name,
-    //         ),
-    //         run_auger("decode", value.as_slice()).await,
-    //         None,
-    //     )
-    //     .await
-    //     .unwrap();
+    client
+        .put(
+            format!(
+                "/kubernetes.io/{}s/{}/{}",
+                k8slocation.resource_location.kind.to_lowercase(),
+                k8slocation.resource_location.namespace,
+                k8slocation.resource_location.name,
+            ),
+            run_auger("encode", value.as_slice()).await,
+            None,
+        )
+        .await
+        .unwrap();
 }
