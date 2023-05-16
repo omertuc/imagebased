@@ -142,6 +142,7 @@ name = "certgraph"
 version = "0.1.0"
 dependencies = [
  "base64 0.21.0",
+ "bcder",
  "bytes",
  "etcd-client",
  "glob",
@@ -149,6 +150,7 @@ dependencies = [
  "lazy_static",
  "pem 2.0.1",
  "pkcs1",
+ "ring",
  "rsa",
  "serde_json",
  "serde_yaml",
@@ -1824,8 +1826,7 @@ checksum = "1a515f5799fe4961cb532f983ce2b23082366b898e52ffbce459c86f67c8378a"
 [[package]]
 name = "x509-certificate"
 version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf14059fbc1dce14de1d08535c411ba0b18749c2550a12550300da90b7ba350b"
+source = "git+https://github.com/omertuc/cryptography-rs?tag=fork-0.19.0#c09b693c8a6f9cf7475f1310405632931f9ad12b"
 dependencies = [
  "bcder",
  "bytes",

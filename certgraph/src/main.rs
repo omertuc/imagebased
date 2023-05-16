@@ -71,10 +71,6 @@ async fn commit(client: &mut Client, graph: &mut CryptoGraph) {
     style_bar(&bar);
     for pair in &mut pairs {
         bar.inc(1);
-        if pair.signer.is_some() {
-            continue;
-        }
-
         pair.commit(client).await;
     }
 
@@ -89,7 +85,7 @@ fn regenerate(graph: &mut CryptoGraph) {
             continue;
         }
 
-        pair.regenerate()
+        pair.regenerate(None)
     }
 
     graph.cert_key_pairs = pairs;
