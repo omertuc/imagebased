@@ -1,16 +1,32 @@
+use etcd_client::{Client as EtcdClient, GetOptions};
 use std::process::Stdio;
-
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use etcd_client::Client;
-
-use tokio::io::AsyncWriteExt;
-
-pub(crate) async fn etcd_get(client: &mut Client, key: &str) -> Vec<u8> {
+pub(crate) async fn etcd_get(client: &mut EtcdClient, key: &str) -> Vec<u8> {
     let get_result = client.get(key, None).await.unwrap();
     let raw_etcd_value = get_result.kvs().first().unwrap().value();
 
     run_auger("decode", raw_etcd_value).await
+}
+
+pub(crate) async fn etcd_list_keys(
+    client: &mut EtcdClient,
+    resource_kind: &str,
+) -> etcd_client::GetResponse {
+    let etcd_get_options = GetOptions::new()
+        .with_prefix()
+        .with_limit(0)
+        .with_keys_only();
+
+    let keys = client
+        .get(
+            format!("/kubernetes.io/{}", resource_kind),
+            Some(etcd_get_options.clone()),
+        )
+        .await
+        .expect("Couldn't get secrets list, is etcd down?");
+    keys
 }
 
 pub(crate) fn k8slocation_to_etcd_key(k8slocation: &crate::locations::K8sLocation) -> String {
@@ -52,7 +68,7 @@ async fn run_auger(auger_subcommand: &str, raw_etcd_value: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) async fn etcd_put(
-    client: &mut Client,
+    client: &mut EtcdClient,
     k8slocation: &crate::locations::K8sLocation,
     value: Vec<u8>,
 ) {

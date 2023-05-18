@@ -3,8 +3,8 @@ use cluster_crypto::{
     CertKeyPair, Certificate, ClusterCryptoObjects, DistributedCert, DistributedPrivateKey,
     Locations, PrivateKey, PublicKey,
 };
-use etcd_client::{Client as EtcdClient, GetOptions};
-use indicatif::{ProgressBar, ProgressStyle};
+use etcd_client::Client as EtcdClient;
+use k8s_etcd::etcd_list_keys;
 use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
     YamlLocation,
@@ -15,10 +15,7 @@ use rules::{IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
 use std::{
     cell::RefCell,
-    collections::{
-        hash_map::Entry::{Occupied, Vacant},
-        HashMap,
-    },
+    collections::hash_map::Entry::{Occupied, Vacant},
     rc::Rc,
 };
 use std::{
@@ -28,62 +25,68 @@ use std::{
 };
 
 mod cluster_crypto;
+mod file_utils;
 mod json_tools;
 mod k8s_etcd;
 mod locations;
+mod progress;
 mod rules;
 
 #[tokio::main]
 async fn main() -> Result<(), ()> {
-    let root_dir = PathBuf::from(".");
+    let cluster_crypto = ClusterCryptoObjects::new();
+    let etcd_client = EtcdClient::connect(["localhost:2379"], None).await.unwrap();
+    let static_resource_dir = &PathBuf::from(".").join("kubernetes");
 
-    let mut cluster_crypto = ClusterCryptoObjects {
-        public_to_private: HashMap::new(),
-        cert_key_pairs: Vec::new(),
-        private_keys: HashMap::new(),
-        certs: HashMap::new(),
-    };
-    let mut etcd_client = EtcdClient::connect(["localhost:2379"], None).await.unwrap();
-
-    println!("Reading etcd...");
-    process_etcd(&mut etcd_client, &mut cluster_crypto).await;
-    println!("Reading kubernetes dir...");
-    process_k8s_dir_dump(
-        &root_dir.join("gathers/first/kubernetes"),
-        &mut cluster_crypto,
-    );
-    println!("Pairing certs and keys...");
-    pair_certs_and_key(&mut cluster_crypto);
-    println!("Creating graph relationships...");
-    fill_signees(&mut cluster_crypto);
-    println!("Regenerating certs...");
-    regenerate(&mut cluster_crypto);
-    println!("Committing changes...");
-    commit(&mut etcd_client, &mut cluster_crypto).await;
-
-    for pair in cluster_crypto.cert_key_pairs {
-        if (*pair).borrow().signer.as_ref().is_none() {
-            println!("{}", (*pair).borrow());
-        }
-    }
+    recertify(etcd_client, cluster_crypto, static_resource_dir).await;
 
     Ok(())
 }
 
-async fn commit(client: &mut EtcdClient, cluster_crypto: &mut ClusterCryptoObjects) {
-    let mut pairs = cluster_crypto.cert_key_pairs.clone();
+async fn recertify(
+    mut etcd_client: EtcdClient,
+    mut cluster_crypto: ClusterCryptoObjects,
+    static_resource_dir: &PathBuf,
+) {
+    println!("Reading etcd...");
+    process_etcd_resources(&mut etcd_client, &mut cluster_crypto).await;
 
-    let bar = ProgressBar::new(pairs.len() as u64).with_message("Committing key/cert pairs...");
-    style_bar(&bar);
-    for pair in &mut pairs {
-        (*pair).borrow().commit(client).await;
-        bar.inc(1);
-    }
+    println!("Reading kubernetes dir...");
+    process_k8s_static_resources(static_resource_dir, &mut cluster_crypto);
 
-    cluster_crypto.cert_key_pairs = pairs;
+    println!("Pairing certs and keys...");
+    pair_certs_and_key(&mut cluster_crypto);
+
+    println!("Creating graph relationships...");
+    fill_signees(&mut cluster_crypto);
+
+    println!("Regenerating certs...");
+    regenerate_certificates_and_keys(&mut cluster_crypto);
+
+    println!("Committing changes...");
+    commit_to_etcd_and_disk(&mut etcd_client, &mut cluster_crypto).await;
+
+    println!("Crypto graph...");
+    cluster_crypto.display();
 }
 
-fn regenerate(cluster_crypto: &mut ClusterCryptoObjects) {
+async fn commit_to_etcd_and_disk(
+    client: &mut EtcdClient,
+    cluster_crypto: &mut ClusterCryptoObjects,
+) {
+    let mut cert_key_pairs = cluster_crypto.cert_key_pairs.clone();
+
+    let progress =
+        progress::create_progress_bar("Committing key/cert pairs...", cert_key_pairs.len());
+    for pair in &mut cert_key_pairs {
+        (*pair).borrow().commit(client).await;
+        progress.inc(1);
+    }
+
+    cluster_crypto.cert_key_pairs = cert_key_pairs;
+}
+
+fn regenerate_certificates_and_keys(cluster_crypto: &mut ClusterCryptoObjects) {
     for cert_key_pair in &cluster_crypto.cert_key_pairs {
         if (**cert_key_pair).borrow().signer.is_some() {
             continue;
@@ -182,56 +185,32 @@ fn pair_certs_and_key(cluster_crypto: &mut ClusterCryptoObjects) {
     }
 }
 
-fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
-    let mut globoptions = glob::MatchOptions::new();
-    globoptions.require_literal_leading_dot = true;
+/// Read all relevant resources from etcd and register them in the cluster_crypto object
+async fn process_etcd_resources(
+    client: &mut EtcdClient,
+    cluster_crypto: &mut ClusterCryptoObjects,
+) {
+    let key_lists = [
+        &(etcd_list_keys(client, "secrets").await),
+        &(etcd_list_keys(client, "configmaps").await),
+    ];
 
-    glob::glob_with(location.join(globstr).to_str().unwrap(), globoptions)
-        .unwrap()
-        .map(|x| x.unwrap())
-        .collect::<Vec<_>>()
-}
+    let total_keys = key_lists
+        .into_iter()
+        .map(|x| x.kvs().into_iter().len())
+        .sum();
 
-async fn process_etcd(client: &mut EtcdClient, cluster_crypto: &mut ClusterCryptoObjects) {
-    let get_options = GetOptions::new()
-        .with_prefix()
-        .with_limit(0)
-        .with_keys_only();
+    let chain = key_lists
+        .into_iter()
+        .map(|x| x.kvs().into_iter())
+        .flatten()
+        .map(|x| x.key_str().unwrap());
 
-    let secret_keys = client
-        .get("/kubernetes.io/secrets", Some(get_options.clone()))
-        .await
-        .expect("Couldn't get secrets list, is etcd down?");
-
-    let configmap_keys = client
-        .get("/kubernetes.io/configmaps", Some(get_options))
-        .await
-        .expect("Couldn't get configmaps list, is etcd down?");
-
-    let bar = ProgressBar::new(configmap_keys.kvs().into_iter().len() as u64)
-        .with_message("Processing etcd configmaps");
-    style_bar(&bar);
-    for key in configmap_keys.kvs() {
-        process_etcd_key(client, key.key_str().unwrap(), cluster_crypto).await;
-        bar.inc(1);
+    let progress = progress::create_progress_bar("Processing etcd resources", total_keys);
+    for key in chain {
+        process_etcd_key(client, key, cluster_crypto).await;
+        progress.inc(1);
     }
-
-    let bar = ProgressBar::new(secret_keys.kvs().into_iter().len() as u64)
-        .with_message("Processing etcd secrets");
-    style_bar(&bar);
-    for key in secret_keys.kvs() {
-        process_etcd_key(client, key.key_str().unwrap(), cluster_crypto).await;
-        bar.inc(1);
-    }
-}
-
-fn style_bar(bar: &ProgressBar) {
-    bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-            .unwrap()
-            .progress_chars("##-"),
-    );
 }
 
 async fn process_etcd_key(
@@ -254,17 +233,16 @@ async fn process_etcd_key(
     }
 }
 
-fn process_k8s_dir_dump(k8s_dir: &Path, cluster_crypto: &mut ClusterCryptoObjects) {
-    // process_k8s_yamls(k8s_dir, graph, allow_incomplete);
+fn process_k8s_static_resources(k8s_dir: &Path, cluster_crypto: &mut ClusterCryptoObjects) {
     process_pems(k8s_dir, cluster_crypto);
 }
 
 fn process_pems(k8s_dir: &Path, cluster_crypto: &mut ClusterCryptoObjects) {
-    globvec(k8s_dir, "**/*.pem")
+    file_utils::globvec(k8s_dir, "**/*.pem")
         .into_iter()
-        .chain(globvec(k8s_dir, "**/*.crt").into_iter())
-        .chain(globvec(k8s_dir, "**/*.key").into_iter())
-        .chain(globvec(k8s_dir, "**/*.pub").into_iter())
+        .chain(file_utils::globvec(k8s_dir, "**/*.crt").into_iter())
+        .chain(file_utils::globvec(k8s_dir, "**/*.key").into_iter())
+        .chain(file_utils::globvec(k8s_dir, "**/*.pub").into_iter())
         .for_each(|pem_path| {
             process_pem(&pem_path, cluster_crypto);
         });

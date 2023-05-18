@@ -56,5 +56,5 @@ ETCD_IMAGE="$(oc adm release extract --from="$RELEASE_IMAGE" --file=image-refere
 sudo podman run --network=host -it --authfile ~/repos/bootstrap-in-place-poc/registry-config.json --entrypoint etcd -v $PWD/sno_disk/ostree/deploy/rhcos/var/lib/etcd:/store ${ETCD_IMAGE} --name editor --data-dir /store
 
 # Find the kube dir and copy it
-cp /home/omer/Documents/model2/sno_disk/ostree/deploy/rhcos/deploy/dd62c369ad76ef06c72ef2d76da6578eeafe4022ef082b0dfe8171e4572a15e4.0/etc/kubernetes -r /home/omer/repos/imagebased/certgraph/gathers/first/
+cp /home/omer/Documents/model2/sno_disk/ostree/deploy/rhcos/deploy/dd62c369ad76ef06c72ef2d76da6578eeafe4022ef082b0dfe8171e4572a15e4.0/etc/kubernetes -r /home/omer/repos/imagebased/certgraph/
 ```

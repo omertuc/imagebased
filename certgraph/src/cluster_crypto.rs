@@ -1,4 +1,4 @@
-use crate::{k8s_etcd, locations::Location, style_bar};
+use crate::{k8s_etcd, locations::Location};
 use base64::Engine as _;
 use bcder::{encode::Values, BitString, Mode};
 use bytes::Bytes;
@@ -237,11 +237,12 @@ impl CertKeyPair {
     }
 
     async fn commit_pair_certificate(&self, client: &mut Client) {
-        let bar = ProgressBar::new((*self.distributed_cert).borrow().locations.0.len() as u64)
-            .with_message("Processing pair certificate locations...");
-        style_bar(&bar);
+        let progress = crate::progress::create_progress_bar(
+            "Processing pair certificate locations...",
+            (*self.distributed_cert).borrow().locations.0.len(),
+        );
         for location in (*self.distributed_cert).borrow().locations.0.iter() {
-            bar.inc(1);
+            progress.inc(1);
             match location {
                 Location::K8s(k8slocation) => {
                     self.commit_k8s_cert(client, k8slocation).await;
@@ -536,4 +537,23 @@ pub(crate) struct ClusterCryptoObjects {
     /// try to find a private key that matches the public key of the cert (with the
     /// help of public_to_private) and populate this list of pairs.
     pub(crate) cert_key_pairs: Vec<Rc<RefCell<CertKeyPair>>>,
+}
+
+impl ClusterCryptoObjects {
+    pub(crate) fn new() -> Self {
+        ClusterCryptoObjects {
+            public_to_private: HashMap::new(),
+            cert_key_pairs: Vec::new(),
+            private_keys: HashMap::new(),
+            certs: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn display(&self) {
+        for cert_key_pair in &self.cert_key_pairs {
+            if (*cert_key_pair).borrow().signer.as_ref().is_none() {
+                println!("{}", (*cert_key_pair).borrow());
+            }
+        }
+    }
 }
