@@ -127,6 +127,17 @@ pub(crate) struct K8sLocation {
     pub(crate) yaml_location: YamlLocation,
 }
 
+impl K8sLocation {
+    pub(crate) fn as_etcd_key(&self) -> String {
+        format!(
+            "/kubernetes.io/{}s/{}/{}",
+            self.resource_location.kind.to_lowercase(),
+            self.resource_location.namespace,
+            self.resource_location.name,
+        )
+    }
+}
+
 impl std::fmt::Display for K8sLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

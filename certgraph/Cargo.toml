@@ -22,3 +22,4 @@ etcd-client = "0.11"
 tokio = { version = "1.0", features = ["full"] }
 ring = "0.16.20"
 bcder = "0.7.1"
+async-trait = "0.1.68"

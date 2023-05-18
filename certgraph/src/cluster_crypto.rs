@@ -1,8 +1,10 @@
-use crate::{k8s_etcd, locations::Location};
+use crate::{
+    k8s_etcd::{self, InMemoryK8sEtcd},
+    locations::Location,
+};
 use base64::Engine as _;
 use bcder::{encode::Values, BitString, Mode};
 use bytes::Bytes;
-use etcd_client::Client;
 use indicatif::ProgressBar;
 use rsa::RsaPrivateKey;
 use serde_json::Value;
@@ -231,21 +233,16 @@ impl CertKeyPair {
         (key_pair, document, cert)
     }
 
-    pub async fn commit(&self, client: &mut Client) {
-        self.commit_pair_certificate(client).await;
-        self.commit_pair_key(client).await;
+    pub async fn commit(&self, etcd_client: &mut InMemoryK8sEtcd) {
+        self.commit_pair_certificate(etcd_client).await;
+        self.commit_pair_key(etcd_client).await;
     }
 
-    async fn commit_pair_certificate(&self, client: &mut Client) {
-        let progress = crate::progress::create_progress_bar(
-            "Processing pair certificate locations...",
-            (*self.distributed_cert).borrow().locations.0.len(),
-        );
+    async fn commit_pair_certificate(&self, etcd_client: &mut InMemoryK8sEtcd) {
         for location in (*self.distributed_cert).borrow().locations.0.iter() {
-            progress.inc(1);
             match location {
                 Location::K8s(k8slocation) => {
-                    self.commit_k8s_cert(client, k8slocation).await;
+                    self.commit_k8s_cert(etcd_client, k8slocation).await;
                 }
                 Location::Filesystem(filelocation) => {
                     self.commit_filesystem_cert(filelocation).await;
@@ -256,10 +253,10 @@ impl CertKeyPair {
 
     async fn commit_k8s_cert(
         &self,
-        client: &mut Client,
+        etcd_client: &mut InMemoryK8sEtcd,
         k8slocation: &crate::locations::K8sLocation,
     ) {
-        let mut resource = get_etcd_yaml(client, k8slocation).await;
+        let mut resource = get_etcd_yaml(etcd_client, k8slocation).await;
         if let Some(value_at_json_pointer) =
             resource.pointer_mut(&k8slocation.yaml_location.json_pointer)
         {
@@ -287,18 +284,18 @@ impl CertKeyPair {
         }
 
         let newcontents = serde_yaml::to_string(&resource).unwrap();
-        k8s_etcd::etcd_put(client, k8slocation, newcontents.as_bytes().to_vec()).await;
+        etcd_client
+            .put(&k8slocation.as_etcd_key(), newcontents.as_bytes().to_vec())
+            .await;
     }
 
-    async fn commit_pair_key(&self, client: &mut Client) {
-        let bar = ProgressBar::new((*self.distributed_cert).borrow().locations.0.len() as u64)
-            .with_message("Processing pair certificate locations...");
+    async fn commit_pair_key(&self, etcd_client: &mut InMemoryK8sEtcd) {
         if let Some(private_key) = &self.distributed_private_key {
             for location in private_key.locations.0.iter() {
-                bar.inc(1);
                 match location {
                     Location::K8s(k8slocation) => {
-                        self.commit_k8s_key(client, k8slocation, private_key).await;
+                        self.commit_k8s_key(etcd_client, k8slocation, private_key)
+                            .await;
                     }
                     Location::Filesystem(filelocation) => {
                         self.commit_filesystem_key(filelocation, private_key).await;
@@ -310,11 +307,11 @@ impl CertKeyPair {
 
     async fn commit_k8s_key(
         &self,
-        client: &mut Client,
+        etcd_client: &mut InMemoryK8sEtcd,
         k8slocation: &crate::locations::K8sLocation,
         distributed_private_key: &DistributedPrivateKey,
     ) {
-        let mut resource = get_etcd_yaml(client, k8slocation).await;
+        let mut resource = get_etcd_yaml(etcd_client, k8slocation).await;
         if let Some(value_at_json_pointer) =
             resource.pointer_mut(&k8slocation.yaml_location.json_pointer)
         {
@@ -340,7 +337,9 @@ impl CertKeyPair {
         }
 
         let newcontents = serde_yaml::to_string(&resource).unwrap();
-        k8s_etcd::etcd_put(client, k8slocation, newcontents.as_bytes().to_vec()).await;
+        etcd_client
+            .put(&k8slocation.as_etcd_key(), newcontents.as_bytes().to_vec())
+            .await;
     }
 
     async fn commit_filesystem_key(
@@ -439,9 +438,14 @@ fn decode_resource_data_entry(
     decoded
 }
 
-async fn get_etcd_yaml(client: &mut Client, k8slocation: &crate::locations::K8sLocation) -> Value {
+async fn get_etcd_yaml(
+    client: &mut InMemoryK8sEtcd,
+    k8slocation: &crate::locations::K8sLocation,
+) -> Value {
     serde_yaml::from_str(&String::from_utf8_lossy(
-        &(k8s_etcd::etcd_get(client, &k8s_etcd::k8slocation_to_etcd_key(k8slocation)).await),
+        &(client
+            .get(&k8s_etcd::k8slocation_to_etcd_key(k8slocation))
+            .await),
     ))
     .unwrap()
 }

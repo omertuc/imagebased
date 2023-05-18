@@ -4,7 +4,7 @@ use cluster_crypto::{
     Locations, PrivateKey, PublicKey,
 };
 use etcd_client::Client as EtcdClient;
-use k8s_etcd::etcd_list_keys;
+use k8s_etcd::InMemoryK8sEtcd;
 use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
     YamlLocation,
@@ -37,14 +37,15 @@ async fn main() -> Result<(), ()> {
     let cluster_crypto = ClusterCryptoObjects::new();
     let etcd_client = EtcdClient::connect(["localhost:2379"], None).await.unwrap();
     let static_resource_dir = &PathBuf::from(".").join("kubernetes");
+    let in_memory_etcd = InMemoryK8sEtcd::new(etcd_client);
 
-    recertify(etcd_client, cluster_crypto, static_resource_dir).await;
+    recertify(in_memory_etcd, cluster_crypto, static_resource_dir).await;
 
     Ok(())
 }
 
 async fn recertify(
-    mut etcd_client: EtcdClient,
+    mut etcd_client: InMemoryK8sEtcd,
     mut cluster_crypto: ClusterCryptoObjects,
     static_resource_dir: &PathBuf,
 ) {
@@ -66,12 +67,15 @@ async fn recertify(
     println!("Committing changes...");
     commit_to_etcd_and_disk(&mut etcd_client, &mut cluster_crypto).await;
 
+    println!("Committing to etcd...");
+    etcd_client.commit_to_actual_etcd().await;
+
     println!("Crypto graph...");
     cluster_crypto.display();
 }
 
 async fn commit_to_etcd_and_disk(
-    client: &mut EtcdClient,
+    etcd_client: &mut InMemoryK8sEtcd,
     cluster_crypto: &mut ClusterCryptoObjects,
 ) {
     let mut cert_key_pairs = cluster_crypto.cert_key_pairs.clone();
@@ -79,7 +83,7 @@ async fn commit_to_etcd_and_disk(
     let progress =
         progress::create_progress_bar("Committing key/cert pairs...", cert_key_pairs.len());
     for pair in &mut cert_key_pairs {
-        (*pair).borrow().commit(client).await;
+        (*pair).borrow().commit(etcd_client).await;
         progress.inc(1);
     }
 
@@ -187,38 +191,31 @@ fn pair_certs_and_key(cluster_crypto: &mut ClusterCryptoObjects) {
 
 /// Read all relevant resources from etcd and register them in the cluster_crypto object
 async fn process_etcd_resources(
-    client: &mut EtcdClient,
+    etcd_client: &mut InMemoryK8sEtcd,
     cluster_crypto: &mut ClusterCryptoObjects,
 ) {
     let key_lists = [
-        &(etcd_list_keys(client, "secrets").await),
-        &(etcd_list_keys(client, "configmaps").await),
+        &(etcd_client.list_keys("secrets").await),
+        &(etcd_client.list_keys("configmaps").await),
     ];
 
-    let total_keys = key_lists
-        .into_iter()
-        .map(|x| x.kvs().into_iter().len())
-        .sum();
+    let total_keys = key_lists.into_iter().map(|x| x.len()).sum();
 
-    let chain = key_lists
-        .into_iter()
-        .map(|x| x.kvs().into_iter())
-        .flatten()
-        .map(|x| x.key_str().unwrap());
+    let chain = key_lists.into_iter().flatten();
 
     let progress = progress::create_progress_bar("Processing etcd resources", total_keys);
     for key in chain {
-        process_etcd_key(client, key, cluster_crypto).await;
+        process_etcd_key(etcd_client, key, cluster_crypto).await;
         progress.inc(1);
     }
 }
 
 async fn process_etcd_key(
-    client: &mut EtcdClient,
+    etcd_client: &mut InMemoryK8sEtcd,
     key: &str,
     cluster_crypto: &mut ClusterCryptoObjects,
 ) {
-    let contents = k8s_etcd::etcd_get(client, key).await;
+    let contents = etcd_client.get(key).await;
     let value: Value = serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
     let value = &value;
     let location = K8sResourceLocation {
