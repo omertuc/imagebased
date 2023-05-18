@@ -1,21 +1,32 @@
 use crate::{
+    file_utils, json_tools,
     k8s_etcd::{self, InMemoryK8sEtcd},
-    locations::Location,
+    locations::{
+        FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location,
+        PemLocationInfo, YamlLocation,
+    },
+    rules::{self, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS},
 };
 use base64::Engine as _;
-use bcder::{encode::Values, BitString, Mode};
+use bcder::{BitString, Mode, encode::Values};
 use bytes::Bytes;
-use indicatif::ProgressBar;
+use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::RsaPrivateKey;
 use serde_json::Value;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     fmt::Display,
+    fs,
     hash::{Hash, Hasher},
-    rc::Rc,
+    io::Read,
+    path::PathBuf, rc::Rc,
 };
-use tokio::io::AsyncReadExt;
+use std::{
+    collections::hash_map::Entry::{Occupied, Vacant},
+    path::Path,
+};
+use tokio::{io::AsyncReadExt, sync::Mutex};
 use x509_certificate::{
     rfc5280, CapturedX509Certificate, InMemorySigningKeyPair,
     KeyAlgorithm::{self, Ed25519},
@@ -242,10 +253,10 @@ impl CertKeyPair {
         for location in (*self.distributed_cert).borrow().locations.0.iter() {
             match location {
                 Location::K8s(k8slocation) => {
-                    self.commit_k8s_cert(etcd_client, k8slocation).await;
+                    self.commit_k8s_cert(etcd_client, &k8slocation).await;
                 }
                 Location::Filesystem(filelocation) => {
-                    self.commit_filesystem_cert(filelocation).await;
+                    self.commit_filesystem_cert(&filelocation).await;
                 }
             }
         }
@@ -444,7 +455,7 @@ async fn get_etcd_yaml(
 ) -> Value {
     serde_yaml::from_str(&String::from_utf8_lossy(
         &(client
-            .get(&k8s_etcd::k8slocation_to_etcd_key(k8slocation))
+            .get(k8s_etcd::k8slocation_to_etcd_key(k8slocation))
             .await),
     ))
     .unwrap()
@@ -521,8 +532,61 @@ impl Display for CertKeyPair {
 
 /// This is the main struct that holds all the crypto objects we've found in the cluster
 /// and the locations where we found them, and how they relate to each other.
-#[derive(Debug, Clone)]
 pub(crate) struct ClusterCryptoObjects {
+    internal: Mutex<ClusterCryptoObjectsInternal>,
+}
+
+impl ClusterCryptoObjects {
+    pub(crate) fn new() -> ClusterCryptoObjects {
+        ClusterCryptoObjects {
+            internal: Mutex::new(ClusterCryptoObjectsInternal::new()),
+        }
+    }
+
+    pub(crate) async fn display(&self) {
+        self.internal.lock().await.display();
+    }
+
+    pub(crate) async fn commit_to_etcd_and_disk(&self, etcd_client: &mut InMemoryK8sEtcd) {
+        self.internal
+            .lock()
+            .await
+            .commit_to_etcd_and_disk(etcd_client)
+            .await;
+    }
+
+    pub(crate) async fn regenerate_certificates_and_keys(&self) {
+        self.internal
+            .lock()
+            .await
+            .regenerate_certificates_and_keys();
+    }
+
+    pub(crate) async fn fill_signees(&mut self) {
+        self.internal.lock().await.fill_signees();
+    }
+
+    pub(crate) async fn pair_certs_and_key(&mut self) {
+        self.internal.lock().await.pair_certs_and_key();
+    }
+
+    pub(crate) async fn process_etcd_key(&self, contents: Vec<u8>) {
+        self.internal
+            .lock()
+            .await
+            .process_etcd_key(contents)
+            .await;
+    }
+
+    pub(crate) async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
+        self.internal
+            .lock()
+            .await
+            .process_k8s_static_resources(k8s_dir);
+    }
+}
+
+pub(crate) struct ClusterCryptoObjectsInternal {
     /// At the end of the day we're scanning the entire cluster for private keys and certificates,
     /// these two hashmaps is where we store all of them. The reason they're hashmaps and not
     /// vectors is because every certificate and every private key we encounter might be found in
@@ -543,9 +607,9 @@ pub(crate) struct ClusterCryptoObjects {
     pub(crate) cert_key_pairs: Vec<Rc<RefCell<CertKeyPair>>>,
 }
 
-impl ClusterCryptoObjects {
+impl ClusterCryptoObjectsInternal {
     pub(crate) fn new() -> Self {
-        ClusterCryptoObjects {
+        ClusterCryptoObjectsInternal {
             public_to_private: HashMap::new(),
             cert_key_pairs: Vec::new(),
             private_keys: HashMap::new(),
@@ -559,5 +623,351 @@ impl ClusterCryptoObjects {
                 println!("{}", (*cert_key_pair).borrow());
             }
         }
+    }
+
+    async fn commit_to_etcd_and_disk(&mut self, etcd_client: &mut InMemoryK8sEtcd) {
+        for cert_key_pair in &self.cert_key_pairs {
+            (*cert_key_pair).borrow().commit(etcd_client).await;
+        }
+    }
+
+    fn regenerate_certificates_and_keys(&mut self) {
+        for cert_key_pair in &self.cert_key_pairs {
+            if (**cert_key_pair).borrow().signer.is_some() {
+                continue;
+            }
+
+            (**cert_key_pair).borrow_mut().regenerate(None)
+        }
+    }
+
+    fn fill_signees(&mut self) {
+        for cert_key_pair in &self.cert_key_pairs {
+            for potential_signee in &self.cert_key_pairs {
+                if let Some(potential_signee_signer) = &(**potential_signee).borrow().signer {
+                    if (*potential_signee_signer).borrow().certificate.original
+                        == (*(*cert_key_pair).borrow().distributed_cert)
+                            .borrow()
+                            .certificate
+                            .original
+                    {
+                        (**cert_key_pair)
+                            .borrow_mut()
+                            .signees
+                            .push(Rc::clone(&potential_signee));
+                    }
+                }
+            }
+        }
+    }
+
+    fn pair_certs_and_key(&mut self) {
+        for (_hashable_cert, distributed_cert) in &self.certs {
+            let mut true_signing_cert: Option<Rc<RefCell<DistributedCert>>> = None;
+            if !(*distributed_cert)
+                .borrow()
+                .certificate
+                .original
+                .subject_is_issuer()
+            {
+                for potential_signing_cert in self.certs.values() {
+                    if (*distributed_cert)
+                        .borrow()
+                        .certificate
+                        .original
+                        .verify_signed_by_certificate(
+                            &(*potential_signing_cert).borrow().certificate.original,
+                        )
+                        .is_ok()
+                    {
+                        true_signing_cert = Some(Rc::clone(potential_signing_cert))
+                    }
+                }
+
+                if true_signing_cert.is_none() {
+                    println!(
+                        "No signing cert found for {}",
+                        (*distributed_cert).borrow().locations
+                    );
+                    panic!("No signing cert found");
+                }
+            }
+
+            let pair = Rc::new(RefCell::new(CertKeyPair {
+                distributed_private_key: None,
+                distributed_cert: Rc::clone(distributed_cert),
+                signer: true_signing_cert,
+                signees: Vec::new(),
+            }));
+
+            if let Occupied(private_key) = self
+                .public_to_private
+                .entry((*distributed_cert).borrow().certificate.public_key.clone())
+            {
+                if let Occupied(distributed_private_key) =
+                    self.private_keys.entry(private_key.get().clone())
+                {
+                    (*pair).borrow_mut().distributed_private_key =
+                        Some(distributed_private_key.get().clone());
+                } else {
+                    panic!("Private key not found");
+                }
+            } else if KNOWN_MISSING_PRIVATE_KEY_CERTS
+                .contains(&(*distributed_cert).borrow().certificate.subject)
+            {
+                println!(
+                    "Known no public key for {}",
+                    (*distributed_cert).borrow().certificate.subject
+                );
+            } else {
+                panic!(
+                "Public key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
+                (*distributed_cert).borrow().certificate.subject
+            );
+            }
+
+            self.cert_key_pairs.push(pair);
+        }
+    }
+
+    async fn process_etcd_key(&mut self, contents: Vec<u8>) {
+        let value: Value =
+            serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
+        let value = &value;
+        let location = K8sResourceLocation {
+            namespace: json_tools::read_metadata_string_field(value, "namespace"),
+            kind: json_tools::read_string_field(value, "kind"),
+            name: json_tools::read_metadata_string_field(value, "name"),
+        };
+        match location.kind.as_str() {
+            "Secret" => self.scan_k8s_secret(value, &location),
+            "ConfigMap" => self.scan_configmap(value, &location),
+            _ => (),
+        }
+    }
+
+    fn scan_configmap(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+        if let Some(data) = value.as_object().unwrap().get("data") {
+            match data {
+                Value::Object(data) => {
+                    for (key, value) in data.iter() {
+                        if IGNORE_LIST_CONFIGMAP.contains(key) {
+                            continue;
+                        }
+                        if let Value::String(value) = value {
+                            self.process_pem_bundle(
+                                value,
+                                &Location::K8s(K8sLocation {
+                                    resource_location: k8s_resource_location.clone(),
+                                    yaml_location: YamlLocation {
+                                        json_pointer: format!("/data/{key}"),
+                                        pem_location: PemLocationInfo {
+                                            pem_bundle_index: None,
+                                        },
+                                    },
+                                }),
+                            );
+                        }
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+    }
+
+    fn scan_k8s_secret(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+        if let Some(data) = value.as_object().unwrap().get("data") {
+            match data {
+                Value::Object(data) => {
+                    for (key, value) in data.iter() {
+                        if rules::IGNORE_LIST_SECRET.contains(key) {
+                            continue;
+                        }
+
+                        self.process_k8s_secret_data_entry(key, value, k8s_resource_location);
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+    }
+
+    fn process_k8s_secret_data_entry(
+        &mut self,
+        key: &str,
+        value: &Value,
+        k8s_resource_location: &K8sResourceLocation,
+    ) {
+        if let Value::String(string_value) = value {
+            if let Ok(value) =
+                base64::engine::general_purpose::STANDARD.decode(string_value.as_bytes())
+            {
+                let value = String::from_utf8(value).unwrap_or_else(|_| {
+                    panic!("Failed to decode base64 {}", key);
+                });
+
+                self.process_pem_bundle(
+                    &value,
+                    &Location::K8s(K8sLocation {
+                        resource_location: k8s_resource_location.clone(),
+                        yaml_location: YamlLocation {
+                            json_pointer: format!("/data/{key}"),
+                            pem_location: PemLocationInfo {
+                                pem_bundle_index: None,
+                            },
+                        },
+                    }),
+                );
+            } else {
+                panic!("Failed to decode base64 {}", string_value);
+            }
+        }
+    }
+
+    fn process_pem_bundle(&mut self, value: &str, location: &Location) {
+        let pems = pem::parse_many(value).unwrap();
+
+        for (i, pem) in pems.iter().enumerate() {
+            let location = location.with_pem_bundle_index(i.try_into().unwrap());
+
+            self.process_single_pem(pem, &location);
+        }
+    }
+
+    fn process_single_pem(&mut self, pem: &pem::Pem, location: &Location) {
+        match pem.tag() {
+            "CERTIFICATE" => {
+                self.process_pem_cert(pem, location);
+            }
+            "RSA PRIVATE KEY" => {
+                self.process_pem_private_key(pem, location);
+            }
+            "EC PRIVATE KEY" => {
+                println!("Found EC key at {}", location);
+            }
+            "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
+                // dbg!("TODO: Handle {} at {}", pem.tag(), location);
+            }
+            _ => {
+                panic!("unknown pem tag {}", pem.tag());
+            }
+        }
+    }
+
+    fn process_pem_private_key(&mut self, pem: &pem::Pem, location: &Location) {
+        let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
+
+        let bytes = bytes::Bytes::copy_from_slice(
+            rsa_private_key
+                .to_public_key()
+                .to_pkcs1_der()
+                .unwrap()
+                .as_bytes(),
+        );
+
+        let public_part = PublicKey::from_bytes(&bytes);
+        let private_part = PrivateKey::Rsa(rsa_private_key);
+
+        self.register_private_key_public_key_mapping(public_part, &private_part);
+        self.register_private_key(private_part, location);
+    }
+
+    fn register_private_key_public_key_mapping(
+        &mut self,
+        public_part: PublicKey,
+        private_part: &PrivateKey,
+    ) {
+        self.public_to_private
+            .insert(public_part, private_part.clone());
+    }
+
+    fn register_private_key(&mut self, private_part: PrivateKey, location: &Location) {
+        match self.private_keys.entry(private_part.clone()) {
+            Vacant(distributed_private_key) => {
+                distributed_private_key.insert(DistributedPrivateKey {
+                    locations: Locations(vec![location.clone()].into_iter().collect()),
+                    key: private_part,
+                });
+            }
+            Occupied(entry) => {
+                entry.into_mut().locations.0.insert(location.clone());
+            }
+        }
+    }
+
+    fn process_pem_cert(&mut self, pem: &pem::Pem, location: &Location) {
+        self.register_cert(
+            &x509_certificate::CapturedX509Certificate::from_der(pem.contents()).unwrap(),
+            location,
+        );
+    }
+
+    fn register_cert(
+        &mut self,
+        x509_certificate: &x509_certificate::CapturedX509Certificate,
+        location: &Location,
+    ) {
+        let hashable_cert = Certificate::from(x509_certificate.clone());
+
+        if rules::EXTERNAL_CERTS.contains(&hashable_cert.subject) {
+            return;
+        }
+
+        match hashable_cert.original.key_algorithm().unwrap() {
+            x509_certificate::KeyAlgorithm::Rsa => {}
+            x509_certificate::KeyAlgorithm::Ecdsa(_) => {
+                return;
+            }
+            x509_certificate::KeyAlgorithm::Ed25519 => {
+                return;
+            }
+        }
+
+        match self.certs.entry(hashable_cert.clone()) {
+            Vacant(distributed_cert) => {
+                distributed_cert.insert(Rc::new(RefCell::new(DistributedCert {
+                    certificate: hashable_cert,
+                    locations: Locations(vec![location.clone()].into_iter().collect()),
+                })));
+            }
+            Occupied(distributed_cert) => {
+                (**distributed_cert.get())
+                    .borrow_mut()
+                    .locations
+                    .0
+                    .insert(location.clone());
+            }
+        }
+    }
+
+    fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
+        self.process_static_resource_pems(k8s_dir);
+    }
+
+    fn process_static_resource_pems(&mut self, k8s_dir: &Path) {
+        file_utils::globvec(k8s_dir, "**/*.pem")
+            .into_iter()
+            .chain(file_utils::globvec(k8s_dir, "**/*.crt").into_iter())
+            .chain(file_utils::globvec(k8s_dir, "**/*.key").into_iter())
+            .chain(file_utils::globvec(k8s_dir, "**/*.pub").into_iter())
+            .for_each(|pem_path| {
+                self.process_static_resource_pem(&pem_path);
+            });
+    }
+
+    fn process_static_resource_pem(&mut self, pem_file_path: &PathBuf) {
+        let mut file = fs::File::open(pem_file_path).expect("failed to open file");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .expect("failed to read file");
+        self.process_pem_bundle(
+            &contents,
+            &Location::Filesystem(FileLocation {
+                file_path: pem_file_path.to_string_lossy().to_string(),
+                content_location: FileContentLocation::Raw(PemLocationInfo {
+                    pem_bundle_index: None,
+                }),
+            }),
+        );
     }
 }
