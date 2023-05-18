@@ -4,14 +4,14 @@ use bcder::{encode::Values, BitString, Mode};
 use bytes::Bytes;
 use etcd_client::Client;
 use indicatif::ProgressBar;
-use pem::{EncodeConfig, LineEnding};
 use rsa::RsaPrivateKey;
 use serde_json::Value;
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt::Display,
-    fs::remove_file,
     hash::{Hash, Hasher},
+    rc::Rc,
 };
 use tokio::io::AsyncReadExt;
 use x509_certificate::{
@@ -99,17 +99,6 @@ impl From<CapturedX509Certificate> for Certificate {
     }
 }
 
-impl Display for CryptoGraph {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (root_cert, signed_certs) in &self.root_certs {
-            for signed_cert in signed_certs {
-                writeln!(f, "  \"{}\" -> \"{}\" ", root_cert, signed_cert,)?;
-            }
-        }
-        Ok(())
-    }
-}
-
 impl PublicKey {
     // pub(crate) fn from_rsa(rsa_public_key: &RSAPublicKey) -> PublicKey {
     //     let modulus = rsa::BigUint::from_bytes_be(rsa_public_key.modulus);
@@ -171,15 +160,19 @@ pub(crate) struct DistributedCert {
 #[derive(Debug, Clone)]
 pub(crate) struct CertKeyPair {
     pub(crate) distributed_private_key: Option<DistributedPrivateKey>,
-    pub(crate) distributed_cert: DistributedCert,
-    pub(crate) signer: Box<Option<Certificate>>,
-    pub(crate) signees: Vec<CertKeyPair>,
+    pub(crate) distributed_cert: Rc<RefCell<DistributedCert>>,
+
+    /// The signer is the cert that signed this cert. If this is a self-signed cert, then this will
+    /// be None
+    pub(crate) signer: Option<Rc<RefCell<DistributedCert>>>,
+    /// The signees are the certs that this cert has signed
+    pub(crate) signees: Vec<Rc<RefCell<CertKeyPair>>>,
 }
 
 impl CertKeyPair {
     pub fn regenerate(&mut self, sign_with: Option<&InMemorySigningKeyPair>) {
-        let (new_cert_subject_key_pair, private_key_bytes, new_cert) = self.resign_cert(sign_with);
-        self.distributed_cert.certificate = Certificate::from(new_cert);
+        let (new_cert_subject_key_pair, private_key_bytes, new_cert) = self.re_sign_cert(sign_with);
+        (*self.distributed_cert).borrow_mut().certificate = Certificate::from(new_cert);
 
         // This condition exists because not all certs originally had a private key
         // associated with them (e.g. some private keys are discarded during install time),
@@ -190,12 +183,14 @@ impl CertKeyPair {
                 PrivateKey::Raw(Bytes::copy_from_slice(private_key_bytes.as_ref()))
         }
 
-        for signee in self.signees.iter_mut() {
-            signee.regenerate(Some(&new_cert_subject_key_pair));
+        for signee in &self.signees {
+            (**signee)
+                .borrow_mut()
+                .regenerate(Some(&new_cert_subject_key_pair));
         }
     }
 
-    fn resign_cert(
+    fn re_sign_cert(
         &mut self,
         sign_with: Option<&InMemorySigningKeyPair>,
     ) -> (
@@ -205,7 +200,7 @@ impl CertKeyPair {
     ) {
         let (key_pair, document) = InMemorySigningKeyPair::generate_random(Ed25519).unwrap();
         let key_pair_signature_algorithm = KeyAlgorithm::from(&key_pair);
-        let cert: &X509Certificate = &self.distributed_cert.certificate.original;
+        let cert: &X509Certificate = &(*self.distributed_cert).borrow().certificate.original;
         let certificate: &rfc5280::Certificate = cert.as_ref();
         let mut tbs_certificate = certificate.tbs_certificate.clone();
         tbs_certificate.subject_public_key_info = rfc5280::SubjectPublicKeyInfo {
@@ -242,10 +237,10 @@ impl CertKeyPair {
     }
 
     async fn commit_pair_certificate(&self, client: &mut Client) {
-        let bar = ProgressBar::new(self.distributed_cert.locations.0.len() as u64)
+        let bar = ProgressBar::new((*self.distributed_cert).borrow().locations.0.len() as u64)
             .with_message("Processing pair certificate locations...");
         style_bar(&bar);
-        for location in self.distributed_cert.locations.0.iter() {
+        for location in (*self.distributed_cert).borrow().locations.0.iter() {
             bar.inc(1);
             match location {
                 Location::K8s(k8slocation) => {
@@ -271,9 +266,14 @@ impl CertKeyPair {
                 let decoded = decode_resource_data_entry(k8slocation, &value_at_json_pointer);
 
                 if let Some(pem_index) = k8slocation.yaml_location.pem_location.pem_bundle_index {
-                    let newpem =
-                        pem::parse(self.distributed_cert.certificate.original.encode_pem())
-                            .unwrap();
+                    let newpem = pem::parse(
+                        (*self.distributed_cert)
+                            .borrow()
+                            .certificate
+                            .original
+                            .encode_pem(),
+                    )
+                    .unwrap();
                     let newbundle = pem_bundle_replace_pem_at_index(decoded, pem_index, newpem);
                     let encoded = encode_resource_data_entry(k8slocation, newbundle);
                     *value_at_json_pointer = encoded;
@@ -290,7 +290,7 @@ impl CertKeyPair {
     }
 
     async fn commit_pair_key(&self, client: &mut Client) {
-        let bar = ProgressBar::new(self.distributed_cert.locations.0.len() as u64)
+        let bar = ProgressBar::new((*self.distributed_cert).borrow().locations.0.len() as u64)
             .with_message("Processing pair certificate locations...");
         if let Some(private_key) = &self.distributed_private_key {
             for location in private_key.locations.0.iter() {
@@ -384,9 +384,14 @@ impl CertKeyPair {
         match &filelocation.content_location {
             crate::locations::FileContentLocation::Raw(pem_location_info) => {
                 if let Some(pem_bundle_index) = pem_location_info.pem_bundle_index {
-                    let newpem =
-                        pem::parse(self.distributed_cert.certificate.original.encode_pem())
-                            .unwrap();
+                    let newpem = pem::parse(
+                        (*self.distributed_cert)
+                            .borrow()
+                            .certificate
+                            .original
+                            .encode_pem(),
+                    )
+                    .unwrap();
                     let newbundle = pem_bundle_replace_pem_at_index(
                         String::from_utf8(contents).unwrap(),
                         pem_bundle_index,
@@ -468,7 +473,7 @@ impl Display for CertKeyPair {
         write!(
             f,
             "Cert {:03} locations {}, ",
-            self.distributed_cert.locations.0.len(),
+            (*self.distributed_cert).borrow().locations.0.len(),
             "<>",
             // self.distributed_cert.locations,
         )?;
@@ -491,29 +496,44 @@ impl Display for CertKeyPair {
                 "NO PRIV".to_string()
             }
         )?;
-        write!(f, " | {}", self.distributed_cert.certificate.subject,)?;
+        write!(
+            f,
+            " | {}",
+            (*self.distributed_cert).borrow().certificate.subject,
+        )?;
 
         if self.signees.len() > 0 {
             writeln!(f, "")?;
         }
 
-        for signee in self.signees.iter() {
-            writeln!(f, "- {}", signee)?;
+        for signee in &self.signees {
+            writeln!(f, "- {}", (**signee).borrow())?;
         }
 
         Ok(())
     }
 }
 
+/// This is the main struct that holds all the crypto objects we've found in the cluster
+/// and the locations where we found them, and how they relate to each other.
 #[derive(Debug, Clone)]
-pub(crate) struct CryptoGraph {
+pub(crate) struct ClusterCryptoObjects {
+    /// At the end of the day we're scanning the entire cluster for private keys and certificates,
+    /// these two hashmaps is where we store all of them. The reason they're hashmaps and not
+    /// vectors is because every certificate and every private key we encounter might be found in
+    /// multiple locations. The value types here (Distributed*) hold a list of locations where the
+    /// key/cert was found, and the list of locations for each cert/key grows as we scan more and
+    /// more resources.
+    pub(crate) private_keys: HashMap<PrivateKey, DistributedPrivateKey>,
+    pub(crate) certs: HashMap<Certificate, Rc<RefCell<DistributedCert>>>,
+
+    /// Every time we encounter a private key, we extract the public key
+    /// from it and add to this mapping. This will later allow us to easily
+    /// associate certificates with their matching private key
     pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
 
-    pub(crate) cert_key_pairs: Vec<CertKeyPair>,
-
-    pub(crate) private_keys: HashMap<PrivateKey, DistributedPrivateKey>,
-    pub(crate) certs: HashMap<Certificate, DistributedCert>,
-
-    // Maps root cert to a list of certificates signed by it
-    pub(crate) root_certs: HashMap<String, Vec<String>>,
+    /// After collecting all certs and keys, we go through the list of certs and
+    /// try to find a private key that matches the public key of the cert (with the
+    /// help of public_to_private) and populate this list of pairs.
+    pub(crate) cert_key_pairs: Vec<Rc<RefCell<CertKeyPair>>>,
 }

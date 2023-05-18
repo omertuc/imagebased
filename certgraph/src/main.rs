@@ -1,9 +1,9 @@
 use base64::Engine as _;
-use etcd_client::{Client, GetOptions};
-use graph::{
-    CertKeyPair, Certificate, CryptoGraph, DistributedCert, DistributedPrivateKey, Locations,
-    PrivateKey, PublicKey,
+use cluster_crypto::{
+    CertKeyPair, Certificate, ClusterCryptoObjects, DistributedCert, DistributedPrivateKey,
+    Locations, PrivateKey, PublicKey,
 };
+use etcd_client::{Client as EtcdClient, GetOptions};
 use indicatif::{ProgressBar, ProgressStyle};
 use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, PemLocationInfo,
@@ -13,9 +13,13 @@ use pkcs1::EncodeRsaPublicKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rules::{IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS};
 use serde_json::Value;
-use std::collections::{
-    hash_map::Entry::{Occupied, Vacant},
-    HashMap,
+use std::{
+    cell::RefCell,
+    collections::{
+        hash_map::Entry::{Occupied, Vacant},
+        HashMap,
+    },
+    rc::Rc,
 };
 use std::{
     fs,
@@ -23,7 +27,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod graph;
+mod cluster_crypto;
 mod json_tools;
 mod k8s_etcd;
 mod locations;
@@ -33,141 +37,148 @@ mod rules;
 async fn main() -> Result<(), ()> {
     let root_dir = PathBuf::from(".");
 
-    let mut graph = CryptoGraph {
+    let mut cluster_crypto = ClusterCryptoObjects {
         public_to_private: HashMap::new(),
-        root_certs: HashMap::new(),
         cert_key_pairs: Vec::new(),
         private_keys: HashMap::new(),
         certs: HashMap::new(),
     };
-    let mut client = Client::connect(["localhost:2379"], None).await.unwrap();
+    let mut etcd_client = EtcdClient::connect(["localhost:2379"], None).await.unwrap();
 
     println!("Reading etcd...");
-    process_etcd(&mut client, &mut graph).await;
+    process_etcd(&mut etcd_client, &mut cluster_crypto).await;
     println!("Reading kubernetes dir...");
-    process_k8s_dir_dump(&root_dir.join("gathers/first/kubernetes"), &mut graph);
+    process_k8s_dir_dump(
+        &root_dir.join("gathers/first/kubernetes"),
+        &mut cluster_crypto,
+    );
     println!("Pairing certs and keys...");
-    pair_certs_and_key(&mut graph);
+    pair_certs_and_key(&mut cluster_crypto);
     println!("Creating graph relationships...");
-    create_graph(&mut graph);
+    fill_signees(&mut cluster_crypto);
     println!("Regenerating certs...");
-    regenerate(&mut graph);
+    regenerate(&mut cluster_crypto);
     println!("Committing changes...");
-    commit(&mut client, &mut graph).await;
+    commit(&mut etcd_client, &mut cluster_crypto).await;
 
-    for pair in graph.cert_key_pairs {
-        if pair.signer.as_ref().is_none() {
-            println!("{}", pair);
+    for pair in cluster_crypto.cert_key_pairs {
+        if (*pair).borrow().signer.as_ref().is_none() {
+            println!("{}", (*pair).borrow());
         }
     }
 
     Ok(())
 }
 
-async fn commit(client: &mut Client, graph: &mut CryptoGraph) {
-    let mut pairs = graph.cert_key_pairs.clone();
+async fn commit(client: &mut EtcdClient, cluster_crypto: &mut ClusterCryptoObjects) {
+    let mut pairs = cluster_crypto.cert_key_pairs.clone();
 
     let bar = ProgressBar::new(pairs.len() as u64).with_message("Committing key/cert pairs...");
     style_bar(&bar);
     for pair in &mut pairs {
+        (*pair).borrow().commit(client).await;
         bar.inc(1);
-        pair.commit(client).await;
     }
 
-    graph.cert_key_pairs = pairs;
+    cluster_crypto.cert_key_pairs = pairs;
 }
 
-fn regenerate(graph: &mut CryptoGraph) {
-    let mut pairs = graph.cert_key_pairs.clone();
-
-    for pair in &mut pairs {
-        if pair.signer.is_some() {
+fn regenerate(cluster_crypto: &mut ClusterCryptoObjects) {
+    for cert_key_pair in &cluster_crypto.cert_key_pairs {
+        if (**cert_key_pair).borrow().signer.is_some() {
             continue;
         }
 
-        pair.regenerate(None)
+        (**cert_key_pair).borrow_mut().regenerate(None)
     }
-
-    graph.cert_key_pairs = pairs;
 }
 
-fn create_graph(graph: &mut CryptoGraph) {
-    let mut pairs = graph.cert_key_pairs.clone();
-    let pairs_copy = pairs.clone();
-
-    for pair in &mut pairs {
-        if pair.signer.is_some() {
-            continue;
-        }
-
-        fill_signees(pair, pairs_copy.clone());
-    }
-
-    graph.cert_key_pairs = pairs;
-}
-
-fn fill_signees(pair: &mut CertKeyPair, pairs: Vec<CertKeyPair>) {
-    let mut signees = Vec::new();
-    let pairs_copy = pairs.clone();
-    for potential_signee in &mut pairs.clone() {
-        if let Some(potential_signee_signer) = &potential_signee.signer.as_ref() {
-            if potential_signee_signer.original == pair.distributed_cert.certificate.original {
-                fill_signees(potential_signee, pairs_copy.clone());
-                signees.push(potential_signee.clone());
+fn fill_signees(cluster_crypto: &mut ClusterCryptoObjects) {
+    for cert_key_pair in &cluster_crypto.cert_key_pairs {
+        for potential_signee in &cluster_crypto.cert_key_pairs {
+            if let Some(potential_signee_signer) = &(**potential_signee).borrow().signer {
+                if (*potential_signee_signer).borrow().certificate.original
+                    == (*(*cert_key_pair).borrow().distributed_cert)
+                        .borrow()
+                        .certificate
+                        .original
+                {
+                    (**cert_key_pair)
+                        .borrow_mut()
+                        .signees
+                        .push(Rc::clone(&potential_signee));
+                }
             }
         }
     }
-    pair.signees = signees;
 }
 
-fn pair_certs_and_key(graph: &mut CryptoGraph) {
-    for (_hashable_cert, distributed_cert) in &graph.certs {
-        let mut true_signing_cert: Option<Certificate> = None;
-        if !distributed_cert.certificate.original.subject_is_issuer() {
-            for potential_signing_cert in graph.certs.values() {
-                if distributed_cert
+fn pair_certs_and_key(cluster_crypto: &mut ClusterCryptoObjects) {
+    for (_hashable_cert, distributed_cert) in &cluster_crypto.certs {
+        let mut true_signing_cert: Option<Rc<RefCell<DistributedCert>>> = None;
+        if !(*distributed_cert)
+            .borrow()
+            .certificate
+            .original
+            .subject_is_issuer()
+        {
+            for potential_signing_cert in cluster_crypto.certs.values() {
+                if (*distributed_cert)
+                    .borrow()
                     .certificate
                     .original
-                    .verify_signed_by_certificate(&potential_signing_cert.certificate.original)
+                    .verify_signed_by_certificate(
+                        &(*potential_signing_cert).borrow().certificate.original,
+                    )
                     .is_ok()
                 {
-                    true_signing_cert = Some(potential_signing_cert.certificate.clone())
+                    true_signing_cert = Some(Rc::clone(potential_signing_cert))
                 }
             }
 
             if true_signing_cert.is_none() {
+                println!(
+                    "No signing cert found for {}",
+                    (*distributed_cert).borrow().locations
+                );
                 panic!("No signing cert found");
             }
         }
 
-        let mut pair = CertKeyPair {
+        let pair = Rc::new(RefCell::new(CertKeyPair {
             distributed_private_key: None,
-            distributed_cert: distributed_cert.clone(),
-            signer: Box::new(true_signing_cert),
+            distributed_cert: Rc::clone(distributed_cert),
+            signer: true_signing_cert,
             signees: Vec::new(),
-        };
+        }));
 
-        if let Occupied(private_key) = graph
+        if let Occupied(private_key) = cluster_crypto
             .public_to_private
-            .entry(distributed_cert.certificate.public_key.clone())
+            .entry((*distributed_cert).borrow().certificate.public_key.clone())
         {
             if let Occupied(distributed_private_key) =
-                graph.private_keys.entry(private_key.get().clone())
+                cluster_crypto.private_keys.entry(private_key.get().clone())
             {
-                pair.distributed_private_key = Some(distributed_private_key.get().clone());
+                (*pair).borrow_mut().distributed_private_key =
+                    Some(distributed_private_key.get().clone());
             } else {
                 panic!("Private key not found");
             }
-        } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&distributed_cert.certificate.subject) {
+        } else if KNOWN_MISSING_PRIVATE_KEY_CERTS
+            .contains(&(*distributed_cert).borrow().certificate.subject)
+        {
             println!(
                 "Known no public key for {}",
-                &distributed_cert.certificate.subject
+                (*distributed_cert).borrow().certificate.subject
             );
         } else {
-            panic!("Public key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}", &distributed_cert.certificate.subject);
+            panic!(
+                "Public key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
+                (*distributed_cert).borrow().certificate.subject
+            );
         }
 
-        graph.cert_key_pairs.push(pair);
+        cluster_crypto.cert_key_pairs.push(pair);
     }
 }
 
@@ -181,7 +192,7 @@ fn globvec(location: &Path, globstr: &str) -> Vec<PathBuf> {
         .collect::<Vec<_>>()
 }
 
-async fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
+async fn process_etcd(client: &mut EtcdClient, cluster_crypto: &mut ClusterCryptoObjects) {
     let get_options = GetOptions::new()
         .with_prefix()
         .with_limit(0)
@@ -201,7 +212,7 @@ async fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
         .with_message("Processing etcd configmaps");
     style_bar(&bar);
     for key in configmap_keys.kvs() {
-        process_etcd_key(client, key.key_str().unwrap(), graph).await;
+        process_etcd_key(client, key.key_str().unwrap(), cluster_crypto).await;
         bar.inc(1);
     }
 
@@ -209,7 +220,7 @@ async fn process_etcd(client: &mut Client, graph: &mut CryptoGraph) {
         .with_message("Processing etcd secrets");
     style_bar(&bar);
     for key in secret_keys.kvs() {
-        process_etcd_key(client, key.key_str().unwrap(), graph).await;
+        process_etcd_key(client, key.key_str().unwrap(), cluster_crypto).await;
         bar.inc(1);
     }
 }
@@ -223,7 +234,11 @@ fn style_bar(bar: &ProgressBar) {
     );
 }
 
-async fn process_etcd_key(client: &mut Client, key: &str, graph: &mut CryptoGraph) {
+async fn process_etcd_key(
+    client: &mut EtcdClient,
+    key: &str,
+    cluster_crypto: &mut ClusterCryptoObjects,
+) {
     let contents = k8s_etcd::etcd_get(client, key).await;
     let value: Value = serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
     let value = &value;
@@ -233,36 +248,36 @@ async fn process_etcd_key(client: &mut Client, key: &str, graph: &mut CryptoGrap
         name: json_tools::read_metadata_string_field(value, "name"),
     };
     match location.kind.as_str() {
-        "Secret" => scan_k8s_secret(value, graph, &location),
-        "ConfigMap" => scan_configmap(value, graph, &location),
+        "Secret" => scan_k8s_secret(value, cluster_crypto, &location),
+        "ConfigMap" => scan_configmap(value, cluster_crypto, &location),
         _ => (),
     }
 }
 
-fn process_k8s_dir_dump(k8s_dir: &Path, graph: &mut CryptoGraph) {
+fn process_k8s_dir_dump(k8s_dir: &Path, cluster_crypto: &mut ClusterCryptoObjects) {
     // process_k8s_yamls(k8s_dir, graph, allow_incomplete);
-    process_pems(k8s_dir, graph);
+    process_pems(k8s_dir, cluster_crypto);
 }
 
-fn process_pems(k8s_dir: &Path, graph: &mut CryptoGraph) {
+fn process_pems(k8s_dir: &Path, cluster_crypto: &mut ClusterCryptoObjects) {
     globvec(k8s_dir, "**/*.pem")
         .into_iter()
         .chain(globvec(k8s_dir, "**/*.crt").into_iter())
         .chain(globvec(k8s_dir, "**/*.key").into_iter())
         .chain(globvec(k8s_dir, "**/*.pub").into_iter())
         .for_each(|pem_path| {
-            process_pem(&pem_path, graph);
+            process_pem(&pem_path, cluster_crypto);
         });
 }
 
-fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph) {
+fn process_pem(pem_file_path: &PathBuf, cluster_crypto: &mut ClusterCryptoObjects) {
     let mut file = fs::File::open(pem_file_path).expect("failed to open file");
     let mut contents = String::new();
     file.read_to_string(&mut contents)
         .expect("failed to read file");
     process_pem_bundle(
         &contents,
-        graph,
+        cluster_crypto,
         &Location::Filesystem(FileLocation {
             file_path: pem_file_path.to_string_lossy().to_string(),
             content_location: FileContentLocation::Raw(PemLocationInfo {
@@ -274,7 +289,7 @@ fn process_pem(pem_file_path: &PathBuf, graph: &mut CryptoGraph) {
 
 fn scan_k8s_secret(
     value: &Value,
-    graph: &mut CryptoGraph,
+    cluster_crypto: &mut ClusterCryptoObjects,
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Some(data) = value.as_object().unwrap().get("data") {
@@ -285,7 +300,12 @@ fn scan_k8s_secret(
                         continue;
                     }
 
-                    process_k8s_secret_data_entry(key, value, graph, k8s_resource_location);
+                    process_k8s_secret_data_entry(
+                        key,
+                        value,
+                        cluster_crypto,
+                        k8s_resource_location,
+                    );
                 }
             }
             _ => todo!(),
@@ -296,7 +316,7 @@ fn scan_k8s_secret(
 fn process_k8s_secret_data_entry(
     key: &str,
     value: &Value,
-    graph: &mut CryptoGraph,
+    cluster_crypto: &mut ClusterCryptoObjects,
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Value::String(string_value) = value {
@@ -308,7 +328,7 @@ fn process_k8s_secret_data_entry(
 
             process_pem_bundle(
                 &value,
-                graph,
+                cluster_crypto,
                 &Location::K8s(K8sLocation {
                     resource_location: k8s_resource_location.clone(),
                     yaml_location: YamlLocation {
@@ -325,23 +345,27 @@ fn process_k8s_secret_data_entry(
     }
 }
 
-fn process_pem_bundle(value: &str, graph: &mut CryptoGraph, location: &Location) {
+fn process_pem_bundle(value: &str, cluster_crypto: &mut ClusterCryptoObjects, location: &Location) {
     let pems = pem::parse_many(value).unwrap();
 
     for (i, pem) in pems.iter().enumerate() {
         let location = location.with_pem_bundle_index(i.try_into().unwrap());
 
-        process_single_pem(pem, graph, &location);
+        process_single_pem(pem, cluster_crypto, &location);
     }
 }
 
-fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+fn process_single_pem(
+    pem: &pem::Pem,
+    cluster_crypto: &mut ClusterCryptoObjects,
+    location: &Location,
+) {
     match pem.tag() {
         "CERTIFICATE" => {
-            process_pem_cert(pem, graph, location);
+            process_pem_cert(pem, cluster_crypto, location);
         }
         "RSA PRIVATE KEY" => {
-            process_pem_private_key(pem, graph, location);
+            process_pem_private_key(pem, cluster_crypto, location);
         }
         "EC PRIVATE KEY" => {
             println!("Found EC key at {}", location);
@@ -355,7 +379,11 @@ fn process_single_pem(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Locati
     }
 }
 
-fn process_pem_private_key(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+fn process_pem_private_key(
+    pem: &pem::Pem,
+    cluster_crypto: &mut ClusterCryptoObjects,
+    location: &Location,
+) {
     let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
     let bytes = bytes::Bytes::copy_from_slice(
@@ -369,22 +397,26 @@ fn process_pem_private_key(pem: &pem::Pem, graph: &mut CryptoGraph, location: &L
     let public_part = PublicKey::from_bytes(&bytes);
     let private_part = PrivateKey::Rsa(rsa_private_key);
 
-    register_private_key_public_key_mapping(graph, public_part, &private_part);
-    register_private_key(graph, private_part, location);
+    register_private_key_public_key_mapping(cluster_crypto, public_part, &private_part);
+    register_private_key(cluster_crypto, private_part, location);
 }
 
 fn register_private_key_public_key_mapping(
-    graph: &mut CryptoGraph,
+    cluster_crypto: &mut ClusterCryptoObjects,
     public_part: PublicKey,
     private_part: &PrivateKey,
 ) {
-    graph
+    cluster_crypto
         .public_to_private
         .insert(public_part, private_part.clone());
 }
 
-fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, location: &Location) {
-    match graph.private_keys.entry(private_part.clone()) {
+fn register_private_key(
+    cluster_crypto: &mut ClusterCryptoObjects,
+    private_part: PrivateKey,
+    location: &Location,
+) {
+    match cluster_crypto.private_keys.entry(private_part.clone()) {
         Vacant(distributed_private_key) => {
             distributed_private_key.insert(DistributedPrivateKey {
                 locations: Locations(vec![location.clone()].into_iter().collect()),
@@ -397,16 +429,20 @@ fn register_private_key(graph: &mut CryptoGraph, private_part: PrivateKey, locat
     }
 }
 
-fn process_pem_cert(pem: &pem::Pem, graph: &mut CryptoGraph, location: &Location) {
+fn process_pem_cert(
+    pem: &pem::Pem,
+    cluster_crypto: &mut ClusterCryptoObjects,
+    location: &Location,
+) {
     register_cert(
-        graph,
+        cluster_crypto,
         &x509_certificate::CapturedX509Certificate::from_der(pem.contents()).unwrap(),
         location,
     );
 }
 
 fn register_cert(
-    graph: &mut CryptoGraph,
+    cluster_crypto: &mut ClusterCryptoObjects,
     x509_certificate: &x509_certificate::CapturedX509Certificate,
     location: &Location,
 ) {
@@ -426,16 +462,16 @@ fn register_cert(
         }
     }
 
-    match graph.certs.entry(hashable_cert.clone()) {
+    match cluster_crypto.certs.entry(hashable_cert.clone()) {
         Vacant(distributed_cert) => {
-            distributed_cert.insert(DistributedCert {
+            distributed_cert.insert(Rc::new(RefCell::new(DistributedCert {
                 certificate: hashable_cert,
                 locations: Locations(vec![location.clone()].into_iter().collect()),
-            });
+            })));
         }
         Occupied(distributed_cert) => {
-            distributed_cert
-                .into_mut()
+            (**distributed_cert.get())
+                .borrow_mut()
                 .locations
                 .0
                 .insert(location.clone());
@@ -445,7 +481,7 @@ fn register_cert(
 
 fn scan_configmap(
     value: &Value,
-    graph: &mut CryptoGraph,
+    cluster_crypto: &mut ClusterCryptoObjects,
     k8s_resource_location: &K8sResourceLocation,
 ) {
     if let Some(data) = value.as_object().unwrap().get("data") {
@@ -458,7 +494,7 @@ fn scan_configmap(
                     if let Value::String(value) = value {
                         process_pem_bundle(
                             value,
-                            graph,
+                            cluster_crypto,
                             &Location::K8s(K8sLocation {
                                 resource_location: k8s_resource_location.clone(),
                                 yaml_location: YamlLocation {
