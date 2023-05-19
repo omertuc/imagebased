@@ -37,19 +37,22 @@ impl Location {
         match self {
             Self::K8s(k8s_location) => {
                 let mut new_k8s_location = k8s_location.clone();
-                new_k8s_location.yaml_location.pem_location.pem_bundle_index =
-                    Some(pem_bundle_index);
+                new_k8s_location.yaml_location.value =
+                    LocationValueType::Pem(PemLocationInfo { pem_bundle_index });
                 Self::K8s(new_k8s_location)
             }
             Self::Filesystem(file_location) => match &file_location.content_location {
-                FileContentLocation::Raw(pem_location_info) => {
-                    let mut new_pem_location_info = pem_location_info.clone();
-                    new_pem_location_info.pem_bundle_index = Some(pem_bundle_index);
-                    let mut new_file_location = file_location.clone();
-                    new_file_location.content_location =
-                        FileContentLocation::Raw(new_pem_location_info);
-                    Self::Filesystem(new_file_location)
-                }
+                FileContentLocation::Raw(location_value_type) => match location_value_type {
+                    LocationValueType::Pem(_) => panic!("Already has PEM info"),
+                    LocationValueType::Jwt => panic!("Already has JWT info"),
+                    LocationValueType::Unknown => {
+                        let mut new_file_location = file_location.clone();
+                        new_file_location.content_location = FileContentLocation::Raw(
+                            LocationValueType::Pem(PemLocationInfo::new(pem_bundle_index)),
+                        );
+                        Self::Filesystem(new_file_location)
+                    }
+                },
             },
         }
     }
@@ -57,15 +60,18 @@ impl Location {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct PemLocationInfo {
-    pub(crate) pem_bundle_index: Option<u64>,
+    pub(crate) pem_bundle_index: u64,
+}
+
+impl PemLocationInfo {
+    fn new(pem_bundle_index: u64) -> Self {
+        Self { pem_bundle_index }
+    }
 }
 
 impl std::fmt::Display for PemLocationInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.pem_bundle_index {
-            Some(index) => write!(f, ":pem{}", index),
-            None => write!(f, ""),
-        }
+        write!(f, ":pem{}", self.pem_bundle_index)
     }
 }
 
@@ -77,7 +83,7 @@ pub(crate) struct FileLocation {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum FileContentLocation {
-    Raw(PemLocationInfo),
+    Raw(LocationValueType),
 }
 
 impl std::fmt::Display for FileContentLocation {
@@ -89,14 +95,31 @@ impl std::fmt::Display for FileContentLocation {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) enum LocationValueType {
+    Pem(PemLocationInfo),
+    Jwt,
+    Unknown,
+}
+
+impl std::fmt::Display for LocationValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LocationValueType::Pem(pem_location_info) => write!(f, "{}", pem_location_info),
+            LocationValueType::Jwt => write!(f, ":jwt"),
+            LocationValueType::Unknown => panic!("Cannot display unknown location value type"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct YamlLocation {
     pub(crate) json_pointer: String,
-    pub(crate) pem_location: PemLocationInfo,
+    pub(crate) value: LocationValueType,
 }
 
 impl std::fmt::Display for YamlLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, ":{}{}", self.json_pointer, self.pem_location)
+        write!(f, ":{}{}", self.json_pointer, self.value)
     }
 }
 
@@ -143,9 +166,7 @@ impl std::fmt::Display for K8sLocation {
         write!(
             f,
             "{}/{}:{}",
-            self.resource_location,
-            self.yaml_location.json_pointer,
-            self.yaml_location.pem_location.pem_bundle_index.unwrap()
+            self.resource_location, self.yaml_location.json_pointer, self.yaml_location.value
         )
     }
 }

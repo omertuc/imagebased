@@ -3,7 +3,7 @@ use crate::{
     k8s_etcd::{self, InMemoryK8sEtcd},
     locations::{
         FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location,
-        PemLocationInfo, YamlLocation,
+        LocationValueType, YamlLocation,
     },
     rules::{self, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS},
 };
@@ -282,7 +282,8 @@ impl CertKeyPair {
             if let Value::String(value_at_json_pointer) = value_at_json_pointer {
                 let decoded = decode_resource_data_entry(k8slocation, &value_at_json_pointer);
 
-                if let Some(pem_index) = k8slocation.yaml_location.pem_location.pem_bundle_index {
+                if let LocationValueType::Pem(pem_location_info) = &k8slocation.yaml_location.value
+                {
                     let newpem = pem::parse(
                         (*self.distributed_cert)
                             .borrow()
@@ -291,7 +292,11 @@ impl CertKeyPair {
                             .encode_pem(),
                     )
                     .unwrap();
-                    let newbundle = pem_bundle_replace_pem_at_index(decoded, pem_index, newpem);
+                    let newbundle = pem_bundle_replace_pem_at_index(
+                        decoded,
+                        pem_location_info.pem_bundle_index,
+                        newpem,
+                    );
                     let encoded = encode_resource_data_entry(k8slocation, newbundle);
                     *value_at_json_pointer = encoded;
                 } else {
@@ -313,18 +318,19 @@ impl CertKeyPair {
             for location in private_key.locations.0.iter() {
                 match location {
                     Location::K8s(k8slocation) => {
-                        self.commit_k8s_key(etcd_client, k8slocation, private_key)
+                        self.commit_k8s_private_key(etcd_client, k8slocation, private_key)
                             .await;
                     }
                     Location::Filesystem(filelocation) => {
-                        self.commit_filesystem_key(filelocation, private_key).await;
+                        self.commit_filesystem_private_key(filelocation, private_key)
+                            .await;
                     }
                 }
             }
         }
     }
 
-    async fn commit_k8s_key(
+    async fn commit_k8s_private_key(
         &self,
         etcd_client: &mut InMemoryK8sEtcd,
         k8slocation: &crate::locations::K8sLocation,
@@ -337,11 +343,12 @@ impl CertKeyPair {
             if let Value::String(value_at_json_pointer) = value_at_json_pointer {
                 let decoded = decode_resource_data_entry(k8slocation, &value_at_json_pointer);
 
-                if let Some(pem_index) = k8slocation.yaml_location.pem_location.pem_bundle_index {
+                if let LocationValueType::Pem(pem_location_info) = &k8slocation.yaml_location.value
+                {
                     if let PrivateKey::Raw(bytes) = &distributed_private_key.key {
                         let newbundle = pem_bundle_replace_pem_at_index(
                             decoded,
-                            pem_index,
+                            pem_location_info.pem_bundle_index,
                             pem::Pem::new("RSA PRIVATE KEY", bytes.as_ref()),
                         );
                         let encoded = encode_resource_data_entry(k8slocation, newbundle);
@@ -361,7 +368,7 @@ impl CertKeyPair {
             .await;
     }
 
-    async fn commit_filesystem_key(
+    async fn commit_filesystem_private_key(
         &self,
         filelocation: &crate::locations::FileLocation,
         private_key: &DistributedPrivateKey,
@@ -375,11 +382,11 @@ impl CertKeyPair {
         match &filelocation.content_location {
             crate::locations::FileContentLocation::Raw(pem_location_info) => {
                 if let PrivateKey::Raw(bytes) = &private_key.key {
-                    if let Some(pem_bundle_index) = pem_location_info.pem_bundle_index {
+                    if let LocationValueType::Pem(pem_location_info) = &pem_location_info {
                         let newpem = pem::Pem::new("RSA PRIVATE KEY", bytes.as_ref());
                         let newbundle = pem_bundle_replace_pem_at_index(
                             String::from_utf8(contents).unwrap(),
-                            pem_bundle_index,
+                            pem_location_info.pem_bundle_index,
                             newpem,
                         );
                         tokio::fs::write(&filelocation.file_path, newbundle)
@@ -401,8 +408,8 @@ impl CertKeyPair {
         file.read_to_end(&mut contents).await.unwrap();
 
         match &filelocation.content_location {
-            crate::locations::FileContentLocation::Raw(pem_location_info) => {
-                if let Some(pem_bundle_index) = pem_location_info.pem_bundle_index {
+            crate::locations::FileContentLocation::Raw(location_value_type) => {
+                if let LocationValueType::Pem(pem_location_info) = &location_value_type {
                     let newpem = pem::parse(
                         (*self.distributed_cert)
                             .borrow()
@@ -413,7 +420,7 @@ impl CertKeyPair {
                     .unwrap();
                     let newbundle = pem_bundle_replace_pem_at_index(
                         String::from_utf8(contents).unwrap(),
-                        pem_bundle_index,
+                        pem_location_info.pem_bundle_index,
                         newpem,
                     );
                     tokio::fs::write(&filelocation.file_path, newbundle)
@@ -576,10 +583,6 @@ impl ClusterCryptoObjects {
 
     pub(crate) async fn pair_certs_and_keys(&mut self) {
         self.internal.lock().await.pair_certs_and_key();
-    }
-
-    pub(crate) async fn process_etcd_key(&self, contents: Vec<u8>) {
-        self.internal.lock().await.process_etcd_key(contents).await;
     }
 
     pub(crate) async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
@@ -776,9 +779,7 @@ impl ClusterCryptoObjectsInternal {
                                     resource_location: k8s_resource_location.clone(),
                                     yaml_location: YamlLocation {
                                         json_pointer: format!("/data/{key}"),
-                                        pem_location: PemLocationInfo {
-                                            pem_bundle_index: None,
-                                        },
+                                        value: LocationValueType::Unknown,
                                     },
                                 }),
                             );
@@ -827,9 +828,7 @@ impl ClusterCryptoObjectsInternal {
                         resource_location: k8s_resource_location.clone(),
                         yaml_location: YamlLocation {
                             json_pointer: format!("/data/{key}"),
-                            pem_location: PemLocationInfo {
-                                pem_bundle_index: None,
-                            },
+                            value: LocationValueType::Unknown,
                         },
                     }),
                 );
@@ -982,9 +981,7 @@ impl ClusterCryptoObjectsInternal {
             &contents,
             &Location::Filesystem(FileLocation {
                 file_path: pem_file_path.to_string_lossy().to_string(),
-                content_location: FileContentLocation::Raw(PemLocationInfo {
-                    pem_bundle_index: None,
-                }),
+                content_location: FileContentLocation::Raw(LocationValueType::Unknown),
             }),
         );
     }
