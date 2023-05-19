@@ -8,8 +8,9 @@ use crate::{
     rules::{self, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS},
 };
 use base64::Engine as _;
-use bcder::{BitString, Mode, encode::Values};
+use bcder::{encode::Values, BitString, Mode};
 use bytes::Bytes;
+use futures_util::future::join_all;
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::RsaPrivateKey;
 use serde_json::Value;
@@ -20,7 +21,9 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     io::Read,
-    path::PathBuf, rc::Rc,
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
 };
 use std::{
     collections::hash_map::Entry::{Occupied, Vacant},
@@ -566,16 +569,12 @@ impl ClusterCryptoObjects {
         self.internal.lock().await.fill_signees();
     }
 
-    pub(crate) async fn pair_certs_and_key(&mut self) {
+    pub(crate) async fn pair_certs_and_keys(&mut self) {
         self.internal.lock().await.pair_certs_and_key();
     }
 
     pub(crate) async fn process_etcd_key(&self, contents: Vec<u8>) {
-        self.internal
-            .lock()
-            .await
-            .process_etcd_key(contents)
-            .await;
+        self.internal.lock().await.process_etcd_key(contents).await;
     }
 
     pub(crate) async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
@@ -583,6 +582,17 @@ impl ClusterCryptoObjects {
             .lock()
             .await
             .process_k8s_static_resources(k8s_dir);
+    }
+
+    pub(crate) async fn process_etcd_resources(
+        &mut self,
+        etcd_client: Arc<Mutex<InMemoryK8sEtcd>>,
+    ) {
+        self.internal
+            .lock()
+            .await
+            .process_etcd_resources(etcd_client)
+            .await;
     }
 }
 
@@ -969,5 +979,40 @@ impl ClusterCryptoObjectsInternal {
                 }),
             }),
         );
+    }
+
+    /// Read all relevant resources from etcd and register them in the cluster_crypto object
+    async fn process_etcd_resources(&mut self, etcd_client: Arc<Mutex<InMemoryK8sEtcd>>) {
+        println!("Obtaining keys");
+        let key_lists = {
+            let etcd_client = etcd_client.lock().await;
+            [
+                &(etcd_client.list_keys("secrets").await),
+                &(etcd_client.list_keys("configmaps").await),
+            ]
+        };
+
+        let all_keys = key_lists.into_iter().flatten();
+
+        // let total_keys = key_lists.into_iter().map(|x| x.len()).sum();
+        // let progress = progress::create_progress_bar("Processing etcd resources", total_keys);
+
+        println!("Retrieving etcd resources...");
+        let join_results = join_all(
+            all_keys
+                .into_iter()
+                .map(|key| {
+                    let key = key.clone();
+                    let etcd_client = Arc::clone(&etcd_client);
+                    tokio::spawn(async move { etcd_client.lock().await.get(key).await })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await;
+
+        println!("Processing etcd resources...");
+        for contents in join_results {
+            self.process_etcd_key(contents.unwrap()).await;
+        }
     }
 }
