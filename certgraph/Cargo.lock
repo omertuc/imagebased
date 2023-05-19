@@ -152,6 +152,7 @@ dependencies = [
  "lazy_static",
  "pem 2.0.1",
  "pkcs1",
+ "rand",
  "ring",
  "rsa",
  "serde_json",

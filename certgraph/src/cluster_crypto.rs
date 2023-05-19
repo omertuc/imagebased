@@ -11,8 +11,8 @@ use base64::Engine as _;
 use bcder::{encode::Values, BitString, Mode};
 use bytes::Bytes;
 use futures_util::future::join_all;
-use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPublicKey};
-use rsa::RsaPrivateKey;
+use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use rsa::{pkcs8::EncodePrivateKey, RsaPrivateKey};
 use serde_json::Value;
 use std::{
     cell::RefCell,
@@ -31,15 +31,13 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, sync::Mutex};
 use x509_certificate::{
-    rfc5280, CapturedX509Certificate, InMemorySigningKeyPair,
-    KeyAlgorithm::{self, Ed25519},
-    Sign, Signer, X509Certificate,
+    rfc5280, CapturedX509Certificate, InMemorySigningKeyPair, KeyAlgorithm, Sign, Signer,
+    X509Certificate,
 };
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PrivateKey {
     Rsa(RsaPrivateKey),
-    Ed25519(Bytes),
     Raw(Bytes),
 }
 
@@ -48,7 +46,6 @@ impl std::fmt::Debug for PrivateKey {
         match self {
             Self::Rsa(_) => write!(f, "<rsa_priv>"),
             Self::Raw(_) => write!(f, "<raw_priv>"),
-            Self::Ed25519(_) => todo!(),
         }
     }
 }
@@ -209,12 +206,15 @@ impl CertKeyPair {
     fn re_sign_cert(
         &mut self,
         sign_with: Option<&InMemorySigningKeyPair>,
-    ) -> (
-        InMemorySigningKeyPair,
-        ring::pkcs8::Document,
-        CapturedX509Certificate,
-    ) {
-        let (key_pair, document) = InMemorySigningKeyPair::generate_random(Ed25519).unwrap();
+    ) -> (InMemorySigningKeyPair, Vec<u8>, CapturedX509Certificate) {
+        let mut rng = rand::thread_rng();
+
+        let rsa_private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+
+        let rsa_pkcs8_der_bytes: Vec<u8> =
+            rsa_private_key.to_pkcs8_der().unwrap().as_bytes().into();
+        let key_pair = InMemorySigningKeyPair::from_pkcs8_der(&rsa_pkcs8_der_bytes).unwrap();
+
         let key_pair_signature_algorithm = KeyAlgorithm::from(&key_pair);
         let cert: &X509Certificate = &(*self.distributed_cert).borrow().certificate.original;
         let certificate: &rfc5280::Certificate = cert.as_ref();
@@ -244,7 +244,12 @@ impl CertKeyPair {
         let cert = X509Certificate::from(cert);
         let cert_der = cert.encode_der().unwrap();
         let cert = CapturedX509Certificate::from_der(cert_der).unwrap();
-        (key_pair, document, cert)
+
+        (
+            key_pair,
+            rsa_private_key.to_pkcs1_der().unwrap().as_bytes().into(),
+            cert,
+        )
     }
 
     pub async fn commit(&self, etcd_client: &mut InMemoryK8sEtcd) {
@@ -337,7 +342,7 @@ impl CertKeyPair {
                         let newbundle = pem_bundle_replace_pem_at_index(
                             decoded,
                             pem_index,
-                            pem::Pem::new("PRIVATE KEY", bytes.as_ref()),
+                            pem::Pem::new("RSA PRIVATE KEY", bytes.as_ref()),
                         );
                         let encoded = encode_resource_data_entry(k8slocation, newbundle);
                         *value_at_json_pointer = encoded;
@@ -371,7 +376,7 @@ impl CertKeyPair {
             crate::locations::FileContentLocation::Raw(pem_location_info) => {
                 if let PrivateKey::Raw(bytes) = &private_key.key {
                     if let Some(pem_bundle_index) = pem_location_info.pem_bundle_index {
-                        let newpem = pem::Pem::new("PRIVATE KEY", bytes.as_ref());
+                        let newpem = pem::Pem::new("RSA PRIVATE KEY", bytes.as_ref());
                         let newbundle = pem_bundle_replace_pem_at_index(
                             String::from_utf8(contents).unwrap(),
                             pem_bundle_index,
@@ -493,8 +498,8 @@ impl Display for CertKeyPair {
             f,
             "Cert {:03} locations {}, ",
             (*self.distributed_cert).borrow().locations.0.len(),
-            "<>",
-            // self.distributed_cert.locations,
+            // "<>",
+            (*self.distributed_cert).borrow().locations,
         )?;
         write!(
             f,
@@ -508,8 +513,8 @@ impl Display for CertKeyPair {
                         .locations
                         .0
                         .len(),
-                    // self.distributed_private_key.as_ref().unwrap().locations,
-                    "<>",
+                    self.distributed_private_key.as_ref().unwrap().locations,
+                    // "<>",
                 )
             } else {
                 "NO PRIV".to_string()
@@ -731,7 +736,7 @@ impl ClusterCryptoObjectsInternal {
                 );
             } else {
                 panic!(
-                "Public key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
+                "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
                 (*distributed_cert).borrow().certificate.subject
             );
             }
@@ -855,7 +860,10 @@ impl ClusterCryptoObjectsInternal {
             "EC PRIVATE KEY" => {
                 println!("Found EC key at {}", location);
             }
-            "RSA PUBLIC KEY" | "PRIVATE KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
+            "PRIVATE KEY" => {
+                panic!("pkcs8 unsupported at {}", location);
+            }
+            "RSA PUBLIC KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
                 // dbg!("TODO: Handle {} at {}", pem.tag(), location);
             }
             _ => {
