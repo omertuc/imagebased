@@ -1,5 +1,9 @@
 use std::fmt::Debug;
 
+use serde_json::Value;
+
+use crate::json_tools;
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub(crate) enum Location {
     K8s(K8sLocation),
@@ -128,6 +132,16 @@ pub(crate) struct K8sResourceLocation {
     pub(crate) namespace: String,
     pub(crate) kind: String,
     pub(crate) name: String,
+}
+
+impl From<&Value> for K8sResourceLocation {
+    fn from(value: &Value) -> Self {
+        Self {
+            namespace: json_tools::read_metadata_string_field(value, "namespace"),
+            kind: json_tools::read_string_field(value, "kind"),
+            name: json_tools::read_metadata_string_field(value, "name"),
+        }
+    }
 }
 
 impl std::hash::Hash for K8sResourceLocation {

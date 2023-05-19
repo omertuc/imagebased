@@ -1,5 +1,5 @@
 use crate::{
-    file_utils, json_tools,
+    file_utils,
     k8s_etcd::{self, InMemoryK8sEtcd},
     locations::{
         FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location,
@@ -749,14 +749,9 @@ impl ClusterCryptoObjectsInternal {
     }
 
     async fn process_etcd_key(&mut self, contents: Vec<u8>) {
-        let value: Value =
-            serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
-        let value = &value;
-        let location = K8sResourceLocation {
-            namespace: json_tools::read_metadata_string_field(value, "namespace"),
-            kind: json_tools::read_string_field(value, "kind"),
-            name: json_tools::read_metadata_string_field(value, "name"),
-        };
+        let value: &Value =
+            &serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
+        let location = K8sResourceLocation::from(value);
         match location.kind.as_str() {
             "Secret" => self.scan_k8s_secret(value, &location),
             "ConfigMap" => self.scan_configmap(value, &location),
