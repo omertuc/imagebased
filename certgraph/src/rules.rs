@@ -30,7 +30,7 @@ lazy_static! {
     pub(crate) static ref KNOWN_MISSING_PRIVATE_KEY_CERTS: HashSet<String> = vec![
         "CN=admin-kubeconfig-signer, OU=openshift",
         "CN=kubelet-bootstrap-kubeconfig-signer, OU=openshift", // TODO: Verify
-        "CN=root-ca, OU=openshift" // TODO: Verify
+        "CN=root-ca, OU=openshift", // TODO: Verify
     ]
         .into_iter()
         .map(str::to_string)

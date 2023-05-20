@@ -181,7 +181,8 @@ pub(crate) struct DistributedCert {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum JwtSigner {
     Unknown,
-    Known(Rc<RefCell<CertKeyPair>>),
+    CertKeyPair(Rc<RefCell<CertKeyPair>>),
+    PrivateKey(Rc<RefCell<DistributedPrivateKey>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,7 +196,7 @@ impl DistributedJwt {
     fn regenerate(&mut self, sign_with: &InMemorySigningKeyPair) {
         match &self.signer {
             JwtSigner::Unknown => panic!("Cannot regenerate JWT with unknown signer"),
-            JwtSigner::Known(cert_key_pair) => {
+            JwtSigner::CertKeyPair(cert_key_pair) => {
                 match &(**cert_key_pair).borrow().distributed_private_key {
                     Some(private_key) => match verify_jwt(&(**private_key).borrow(), self) {
                         Ok(claims) => {
@@ -219,6 +220,7 @@ impl DistributedJwt {
                     None => panic!("Cannot regenerate JWT with unknown private key"),
                 };
             }
+            JwtSigner::PrivateKey(_) => panic!("Unsupported key type"),
         };
     }
 
@@ -497,7 +499,6 @@ impl CertKeyPair {
                             let encoded = encode_resource_data_entry(k8slocation, &newbundle);
                             *value_at_json_pointer = encoded;
                         }
-                        _ => (),
                     }
                 } else {
                     panic!("shouldn't happen");
@@ -841,7 +842,7 @@ impl ClusterCryptoObjectsInternal {
 
     fn fill_jwt_signers(&mut self) {
         for distributed_jwt in self.jwts.values() {
-            let mut maybe_signer = None;
+            let mut maybe_signer = JwtSigner::Unknown;
 
             for cert_key_pair in &self.cert_key_pairs {
                 if let Some(distributed_private_key) =
@@ -854,24 +855,37 @@ impl ClusterCryptoObjectsInternal {
                         Ok(
                             _claims, /* We don't care about the claims, only that the signature is correct */
                         ) => {
-                            maybe_signer = Some(Rc::clone(cert_key_pair));
+                            maybe_signer = JwtSigner::CertKeyPair(Rc::clone(cert_key_pair));
                             break;
                         }
-                        Err(error) => {
-                            println!("Error verifying JWT: {}", error);
+                        Err(_error) => {
+                            // println!("Error verifying JWT: {}", error);
                         }
                     }
                 }
             }
 
-            if let Some(signer) = maybe_signer {
-                (**distributed_jwt).borrow_mut().signer = JwtSigner::Known(signer);
-            } else {
-                panic!(
-                    "Could not find signer for JWT {}",
-                    (**distributed_jwt).borrow().jwt.str
-                );
+            match &maybe_signer {
+                JwtSigner::Unknown => {
+                    // Try free form private keys
+                    for private_key in self.private_keys.values() {
+                        match verify_jwt(&(**private_key).borrow(), &(**distributed_jwt).borrow()) {
+                            Ok(
+                                _claims, /* We don't care about the claims, only that the signature is correct */
+                            ) => {
+                                maybe_signer = JwtSigner::PrivateKey(Rc::clone(private_key));
+                                break;
+                            }
+                            Err(_error) => {
+                                // println!("Error verifying JWT: {}", error);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
+
+            (**distributed_jwt).borrow_mut().signer = maybe_signer;
         }
     }
 
@@ -897,7 +911,7 @@ impl ClusterCryptoObjectsInternal {
                 let x = potential_jwt_signee.borrow_mut();
                 match &x.signer {
                     JwtSigner::Unknown => panic!("JWT has unknown signer"),
-                    JwtSigner::Known(cert_key_pair) => {
+                    JwtSigner::CertKeyPair(cert_key_pair) => {
                         if cert_key_pair == cert_key_pair {
                             (*cert_key_pair)
                                 .borrow_mut()
@@ -905,6 +919,7 @@ impl ClusterCryptoObjectsInternal {
                                 .push(Signee::Jwt(Rc::clone(potential_jwt_signee)));
                         }
                     }
+                    JwtSigner::PrivateKey(_) => {}
                 }
             }
         }
