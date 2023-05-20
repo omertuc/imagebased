@@ -55,7 +55,7 @@ impl std::fmt::Debug for PrivateKey {
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PublicKey {
-    // Rsa(RsaPublicKey),
+    Rsa(Bytes),
     Raw(Bytes),
     // Dummy,
 }
@@ -65,6 +65,7 @@ impl std::fmt::Debug for PublicKey {
         match self {
             // Self::Rsa(_) => write!(f, "<rsa_pub>"),
             Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
+            Self::Rsa(x) => write!(f, "<rsa_pub: {:?}>", x),
             // Self::Dummy => write!(f, "Dummy"),
         }
     }
@@ -121,15 +122,12 @@ impl From<CapturedX509Certificate> for Certificate {
 }
 
 impl PublicKey {
-    // pub(crate) fn from_rsa(rsa_public_key: &RSAPublicKey) -> PublicKey {
-    //     let modulus = rsa::BigUint::from_bytes_be(rsa_public_key.modulus);
-    //     let exponent = rsa::BigUint::from_bytes_be(rsa_public_key.exponent);
-
-    //     PublicKey::Rsa(RsaPublicKey::new(modulus, exponent).unwrap())
-    // }
-
     pub(crate) fn from_bytes(bytes: &Bytes) -> PublicKey {
         PublicKey::Raw(bytes.clone())
+    }
+
+    pub(crate) fn from_rsa_der(der_bytes: &Bytes) -> PublicKey {
+        PublicKey::Rsa(der_bytes.clone())
     }
 }
 
@@ -198,6 +196,12 @@ impl Display for DistributedPrivateKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DistributedCert {
     pub(crate) certificate: Certificate,
+    pub(crate) locations: Locations,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DistributedPublicKey {
+    pub(crate) public_key: PublicKey,
     pub(crate) locations: Locations,
 }
 
@@ -800,13 +804,14 @@ impl ClusterCryptoObjects {
 }
 
 pub(crate) struct ClusterCryptoObjectsInternal {
-    /// At the end of the day we're scanning the entire cluster for private keys and certificates,
-    /// these two hashmaps is where we store all of them. The reason they're hashmaps and not
-    /// vectors is because every certificate and every private key we encounter might be found in
-    /// multiple locations. The value types here (Distributed*) hold a list of locations where the
-    /// key/cert was found, and the list of locations for each cert/key grows as we scan more and
-    /// more resources.
+    /// At the end of the day we're scanning the entire cluster for private keys, public keys
+    /// certificates, and jwts. These four hashmaps is where we store all of them. The reason
+    /// they're hashmaps and not vectors is because every one of those objects we encounter might
+    /// be found in multiple locations. The value types here (Distributed*) hold a list of
+    /// locations where the key/cert was found, and the list of locations for each cert/key grows
+    /// as we scan more and more resources.
     pub(crate) private_keys: HashMap<PrivateKey, Rc<RefCell<DistributedPrivateKey>>>,
+    pub(crate) public_keys: HashMap<PublicKey, Rc<RefCell<DistributedPublicKey>>>,
     pub(crate) certs: HashMap<Certificate, Rc<RefCell<DistributedCert>>>,
     pub(crate) jwts: HashMap<Jwt, Rc<RefCell<DistributedJwt>>>,
 
@@ -825,6 +830,7 @@ impl ClusterCryptoObjectsInternal {
     pub(crate) fn new() -> Self {
         ClusterCryptoObjectsInternal {
             private_keys: HashMap::new(),
+            public_keys: HashMap::new(),
             certs: HashMap::new(),
             jwts: HashMap::new(),
             public_to_private: HashMap::new(),
@@ -1026,7 +1032,7 @@ impl ClusterCryptoObjectsInternal {
                 .contains(&(**distributed_cert).borrow().certificate.subject)
             {
                 println!(
-                    "Known no public key for {}",
+                    "Known no private key for {}",
                     (**distributed_cert).borrow().certificate.subject
                 );
             } else {
@@ -1204,9 +1210,15 @@ impl ClusterCryptoObjectsInternal {
                 println!("Found EC key at {}", location);
             }
             "PRIVATE KEY" => {
-                panic!("pkcs8 unsupported at {}", location);
+                panic!("private pkcs8 unsupported at {}", location);
             }
-            "RSA PUBLIC KEY" | "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
+            "PUBLIC KEY" => {
+                panic!("public pkcs8 unsupported at {}", location);
+            }
+            "RSA PUBLIC KEY" => {
+                self.process_pem_public_key(pem, location);
+            }
+            "ENTITLEMENT DATA" | "RSA SIGNATURE" => {
                 // dbg!("TODO: Handle {} at {}", pem.tag(), location);
             }
             _ => {
@@ -1367,6 +1379,28 @@ impl ClusterCryptoObjectsInternal {
         println!("Processing etcd resources...");
         for contents in join_results {
             self.process_etcd_key(contents.unwrap()).await;
+        }
+    }
+
+    fn process_pem_public_key(&mut self, pem: &pem::Pem, location: &Location) {
+        let rsa_public_key =
+            PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(pem.contents()));
+
+        match self.public_keys.entry(rsa_public_key.clone()) {
+            Vacant(distributed_public_key_entry) => {
+                distributed_public_key_entry.insert(Rc::new(RefCell::new(DistributedPublicKey {
+                    locations: Locations(vec![location.clone()].into_iter().collect()),
+                    public_key: rsa_public_key,
+                })));
+            }
+
+            Occupied(distributed_private_key_entry) => {
+                (**distributed_private_key_entry.into_mut())
+                    .borrow_mut()
+                    .locations
+                    .0
+                    .insert(location.clone());
+            }
         }
     }
 }
