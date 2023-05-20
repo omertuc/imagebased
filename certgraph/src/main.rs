@@ -8,7 +8,6 @@ mod cluster_crypto;
 mod file_utils;
 mod json_tools;
 mod k8s_etcd;
-mod locations;
 mod progress;
 mod rules;
 

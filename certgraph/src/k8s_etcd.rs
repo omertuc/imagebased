@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use crate::cluster_crypto::K8sLocation;
 
 // An etcd client wrapper backed by an in-memory hashmap. All reads are served from memory, with
 // fallback to actual etcd. All writes are strictly to memory. Also supports eventually committing
@@ -122,7 +123,7 @@ impl InMemoryK8sEtcdInternal {
     }
 }
 
-pub(crate) fn k8slocation_to_etcd_key(k8slocation: &crate::locations::K8sLocation) -> String {
+pub(crate) fn k8slocation_to_etcd_key(k8slocation: &K8sLocation) -> String {
     format!(
         "/kubernetes.io/{}s/{}/{}",
         k8slocation.resource_location.kind.to_lowercase(),

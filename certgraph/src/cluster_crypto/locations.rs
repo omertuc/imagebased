@@ -1,8 +1,37 @@
-use std::fmt::Debug;
+use std::{
+    collections::HashSet,
+    fmt::{Debug, Display},
+};
 
 use serde_json::Value;
 
 use crate::json_tools;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locations(pub(crate) HashSet<Location>);
+
+impl AsRef<HashSet<Location>> for Locations {
+    fn as_ref(&self) -> &HashSet<Location> {
+        &self.0
+    }
+}
+
+impl AsMut<HashSet<Location>> for Locations {
+    fn as_mut(&mut self) -> &mut HashSet<Location> {
+        &mut self.0
+    }
+}
+
+impl Display for Locations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let locations = self.0.iter().collect::<Vec<_>>();
+        write!(f, "[")?;
+        for location in locations {
+            write!(f, "{}, ", location)?;
+        }
+        write!(f, "]")
+    }
+}
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub(crate) enum Location {
