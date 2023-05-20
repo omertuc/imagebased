@@ -60,6 +60,28 @@ impl Location {
             },
         }
     }
+
+    pub(crate) fn with_jwt(&self) -> Self {
+        match self {
+            Self::K8s(k8s_location) => {
+                let mut new_k8s_location = k8s_location.clone();
+                new_k8s_location.yaml_location.value = LocationValueType::Jwt;
+                Self::K8s(new_k8s_location)
+            }
+            Self::Filesystem(file_location) => match &file_location.content_location {
+                FileContentLocation::Raw(location_value_type) => match location_value_type {
+                    LocationValueType::Pem(_) => panic!("Already has PEM info"),
+                    LocationValueType::Jwt => panic!("Already has JWT info"),
+                    LocationValueType::Unknown => {
+                        let mut new_file_location = file_location.clone();
+                        new_file_location.content_location =
+                            FileContentLocation::Raw(LocationValueType::Jwt);
+                        Self::Filesystem(new_file_location)
+                    }
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

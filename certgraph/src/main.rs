@@ -43,26 +43,29 @@ async fn recertify(
     println!("Pairing certs and keys...");
     cluster_crypto.pair_certs_and_keys().await;
 
+    println!("Scanning jwt signers...");
+    cluster_crypto.fill_jwt_signers().await;
+
     println!("Creating graph relationships...");
     cluster_crypto.fill_signees().await;
 
-    println!("Regenerating certs...");
-    cluster_crypto.regenerate_certificates_and_keys().await;
+    // println!("Regenerating certs...");
+    // cluster_crypto.regenerate_certificates_and_keys().await;
 
-    println!("Committing changes...");
-    {
-        let mut etcd_client = in_memory_etcd_client.lock().await;
-        cluster_crypto
-            .commit_to_etcd_and_disk(&mut etcd_client)
-            .await;
-    }
+    // println!("Committing changes...");
+    // {
+    //     let mut etcd_client = in_memory_etcd_client.lock().await;
+    //     cluster_crypto
+    //         .commit_to_etcd_and_disk(&mut etcd_client)
+    //         .await;
+    // }
 
-    println!("Committing to etcd...");
-    in_memory_etcd_client
-        .lock()
-        .await
-        .commit_to_actual_etcd()
-        .await;
+    // println!("Committing to etcd...");
+    // in_memory_etcd_client
+    //     .lock()
+    //     .await
+    //     .commit_to_actual_etcd()
+    //     .await;
 
     println!("Crypto graph...");
     cluster_crypto.display().await;
