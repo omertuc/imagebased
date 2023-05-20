@@ -170,6 +170,29 @@ impl Display for Locations {
 pub(crate) struct DistributedPrivateKey {
     pub(crate) key: PrivateKey,
     pub(crate) locations: Locations,
+    pub(crate) signees: Vec<Signee>,
+}
+
+impl Display for DistributedPrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Standalone priv {:03} locations {}",
+            self.locations.0.len(),
+            self.locations,
+            // "<>",
+        )?;
+
+        if self.signees.len() > 0 {
+            writeln!(f, "")?;
+        }
+
+        for signee in &self.signees {
+            writeln!(f, "- {}", signee)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,7 +303,7 @@ impl Display for Signee {
             Signee::CertKeyPair(cert_key_pair) => {
                 write!(f, "CertKeyPair({})", (**cert_key_pair).borrow())
             }
-            Signee::Jwt(jwt) => write!(f, "Jwt({})", (**jwt).borrow().jwt.str),
+            Signee::Jwt(jwt) => write!(f, "Jwt({})", (**jwt).borrow().locations),
         }
     }
 }
@@ -289,11 +312,11 @@ impl Signee {
     fn regenerate(&mut self, sign_with: Option<&InMemorySigningKeyPair>) {
         match self {
             Self::CertKeyPair(cert_key_pair) => {
-                cert_key_pair.borrow_mut().regenerate(sign_with);
+                (**cert_key_pair).borrow_mut().regenerate(sign_with);
             }
             Self::Jwt(jwt) => {
                 match sign_with {
-                    Some(key_pair) => jwt.borrow_mut().regenerate(key_pair),
+                    Some(key_pair) => (**jwt).borrow_mut().regenerate(key_pair),
                     None => panic!(
                     "Cannot regenerate a jwt without a signing key, regenerate may only be called on a signee that is a root cert-key-pair"
                 ),
@@ -815,6 +838,10 @@ impl ClusterCryptoObjectsInternal {
                 println!("{}", (**cert_key_pair).borrow());
             }
         }
+
+        for private_key in self.private_keys.values() {
+            println!("{}", (**private_key).borrow());
+        }
     }
 
     async fn commit_to_etcd_and_disk(&mut self, etcd_client: &mut InMemoryK8sEtcd) {
@@ -908,18 +935,34 @@ impl ClusterCryptoObjectsInternal {
             }
 
             for potential_jwt_signee in self.jwts.values() {
-                let x = potential_jwt_signee.borrow_mut();
-                match &x.signer {
+                match &(**potential_jwt_signee).borrow_mut().signer {
                     JwtSigner::Unknown => panic!("JWT has unknown signer"),
-                    JwtSigner::CertKeyPair(cert_key_pair) => {
-                        if cert_key_pair == cert_key_pair {
-                            (*cert_key_pair)
+                    JwtSigner::CertKeyPair(jwt_signer_cert_key_pair) => {
+                        if jwt_signer_cert_key_pair == cert_key_pair {
+                            (**cert_key_pair)
                                 .borrow_mut()
                                 .signees
                                 .push(Signee::Jwt(Rc::clone(potential_jwt_signee)));
                         }
                     }
                     JwtSigner::PrivateKey(_) => {}
+                }
+            }
+        }
+
+        for distributed_private_key in self.private_keys.values() {
+            for potential_jwt_signee in self.jwts.values() {
+                match &(**potential_jwt_signee).borrow_mut().signer {
+                    JwtSigner::Unknown => panic!("JWT has unknown signer"),
+                    JwtSigner::CertKeyPair(_cert_key_pair) => {}
+                    JwtSigner::PrivateKey(jwt_signer_distributed_private_key) => {
+                        if jwt_signer_distributed_private_key == distributed_private_key {
+                            (**distributed_private_key)
+                                .borrow_mut()
+                                .signees
+                                .push(Signee::Jwt(Rc::clone(potential_jwt_signee)));
+                        }
+                    }
                 }
             }
         }
@@ -973,6 +1016,9 @@ impl ClusterCryptoObjectsInternal {
                 {
                     (*pair).borrow_mut().distributed_private_key =
                         Some(Rc::clone(distributed_private_key.get()));
+
+                    // Remove the private key from the pool of private keys as it's now paired with a cert
+                    self.private_keys.remove(&private_key.get());
                 } else {
                     panic!("Private key not found");
                 }
@@ -1203,6 +1249,7 @@ impl ClusterCryptoObjectsInternal {
                     DistributedPrivateKey {
                         locations: Locations(vec![location.clone()].into_iter().collect()),
                         key: private_part,
+                        signees: vec![],
                     },
                 )));
             }
