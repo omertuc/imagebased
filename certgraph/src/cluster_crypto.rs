@@ -17,7 +17,7 @@ use futures_util::future::join_all;
 use jwt_simple::prelude::{RSAKeyPairLike, RSAPublicKeyLike};
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{pkcs8::EncodePrivateKey, RsaPrivateKey};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::{
     borrow::Borrow,
     cell::RefCell,
@@ -847,14 +847,19 @@ impl ClusterCryptoObjectsInternal {
                 if let Some(distributed_private_key) =
                     &(**cert_key_pair).borrow().distributed_private_key
                 {
-                    if let Ok(
-                        _claims, /* We don't care about the claims, only that the signature is correct */
-                    ) = verify_jwt(
+                    match verify_jwt(
                         &(**distributed_private_key).borrow(),
                         &(**distributed_jwt).borrow(),
                     ) {
-                        maybe_signer = Some(Rc::clone(cert_key_pair));
-                        break;
+                        Ok(
+                            _claims, /* We don't care about the claims, only that the signature is correct */
+                        ) => {
+                            maybe_signer = Some(Rc::clone(cert_key_pair));
+                            break;
+                        }
+                        Err(error) => {
+                            println!("Error verifying JWT: {}", error);
+                        }
                     }
                 }
             }
@@ -1307,10 +1312,7 @@ impl ClusterCryptoObjectsInternal {
 fn verify_jwt(
     distributed_private_key: &DistributedPrivateKey,
     distributed_jwt: &DistributedJwt,
-) -> Result<
-    jwt_simple::prelude::JWTClaims<serde_json::Map<String, serde_json::Value>>,
-    jwt_simple::Error,
-> {
+) -> Result<jwt_simple::prelude::JWTClaims<Map<String, Value>>, jwt_simple::Error> {
     match &distributed_private_key.borrow().key {
         PrivateKey::Rsa(rsa_private_key) => {
             // TODO: Use public to private map instead? Should be faster
@@ -1322,5 +1324,5 @@ fn verify_jwt(
             .unwrap()
         }
     }
-    .verify_token::<serde_json::Map<String, serde_json::Value>>(&distributed_jwt.jwt.str, None)
+    .verify_token::<Map<String, Value>>(&distributed_jwt.jwt.str, None)
 }
