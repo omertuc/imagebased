@@ -678,7 +678,7 @@ impl ClusterCryptoObjectsInternal {
                             value,
                             k8s_resource_location,
                             true,
-                            "data",
+                            format!("/data/{}", key.to_string().replace("/", "~1")).as_str(),
                         );
                     }
                 }
@@ -686,21 +686,32 @@ impl ClusterCryptoObjectsInternal {
             }
         }
 
-        if let Some(data) = value.as_object().unwrap().get("annotations") {
-            match data {
-                Value::Object(data) => {
-                    for (key, value) in data.iter() {
-                        if rules::IGNORE_LIST_SECRET.contains(key) {
-                            continue;
-                        }
+        if let Some(metadata) = value.as_object().unwrap().get("metadata") {
+            match metadata {
+                Value::Object(metadata) => {
+                    if let Some(annotations) = metadata.get("annotations") {
+                        match annotations {
+                            Value::Object(annotations) => {
+                                for (key, value) in annotations.iter() {
+                                    if rules::IGNORE_LIST_SECRET.contains(key) {
+                                        continue;
+                                    }
 
-                        self.process_k8s_secret_data_entry(
-                            key,
-                            value,
-                            k8s_resource_location,
-                            false,
-                            "annotations",
-                        );
+                                    self.process_k8s_secret_data_entry(
+                                        key,
+                                        value,
+                                        k8s_resource_location,
+                                        false,
+                                        format!(
+                                            "/metadata/annotations/{}",
+                                            key.to_string().replace("/", "~1")
+                                        )
+                                        .as_str(),
+                                    );
+                                }
+                            }
+                            _ => todo!(),
+                        }
                     }
                 }
                 _ => todo!(),
@@ -732,7 +743,7 @@ impl ClusterCryptoObjectsInternal {
             let location = &Location::K8s(K8sLocation {
                 resource_location: k8s_resource_location.clone(),
                 yaml_location: YamlLocation {
-                    json_pointer: format!("/{path}/{key}"),
+                    json_pointer: path.to_string(),
                     value: LocationValueType::Unknown,
                 },
             });
