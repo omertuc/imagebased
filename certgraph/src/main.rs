@@ -80,6 +80,8 @@ async fn establish_relationships(cluster_crypto: &mut ClusterCryptoObjects) {
     cluster_crypto.fill_jwt_signers().await;
     println!("Creating graph relationships...");
     cluster_crypto.fill_signees().await;
+    println!("Associating public keys...");
+    cluster_crypto.associate_public_keys().await;
 }
 
 async fn collect_crypto_objects(

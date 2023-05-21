@@ -12,18 +12,17 @@ use bcder::{encode::Values, Mode};
 use bytes::Bytes;
 use futures_util::future::join_all;
 use jwt_simple::prelude::RSAPublicKeyLike;
-use locations::K8sLocation;
 use locations::{
-    FileContentLocation, FileLocation, K8sResourceLocation, Location, LocationValueType,
-    YamlLocation,
+    FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location,
+    LocationValueType, YamlLocation,
 };
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPublicKey};
-use rsa::{pkcs8::EncodePrivateKey, RsaPrivateKey};
+use rsa::RsaPrivateKey;
 use serde_json::{Map, Value};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    fmt::Display,
+    fmt::{Display, Formatter},
     fs,
     hash::{Hash, Hasher},
     io::Read,
@@ -44,8 +43,10 @@ use self::{
 };
 
 pub(crate) mod cert_key_pair;
+pub(crate) mod cyrpto_utils;
 pub(crate) mod distributed_jwt;
 pub(crate) mod distributed_private_key;
+pub(crate) mod distributed_public_key;
 pub(crate) mod locations;
 
 /// This is the main struct that holds all the crypto objects we've found in the cluster and the
@@ -59,7 +60,8 @@ pub(crate) struct ClusterCryptoObjectsInternal {
     /// as we scan more and more resources. The hashmap keys are of-course hashables so we can
     /// easily check if we already encountered the object before.
     pub(crate) private_keys: HashMap<PrivateKey, Rc<RefCell<DistributedPrivateKey>>>,
-    pub(crate) public_keys: HashMap<PublicKey, Rc<RefCell<DistributedPublicKey>>>,
+    pub(crate) public_keys:
+        HashMap<PublicKey, Rc<RefCell<distributed_public_key::DistributedPublicKey>>>,
     pub(crate) certs: HashMap<Certificate, Rc<RefCell<DistributedCert>>>,
     pub(crate) jwts: HashMap<Jwt, Rc<RefCell<DistributedJwt>>>,
 
@@ -80,7 +82,7 @@ pub(crate) enum PrivateKey {
 }
 
 impl std::fmt::Debug for PrivateKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rsa(_) => write!(f, "<rsa_priv>"),
         }
@@ -93,8 +95,30 @@ pub(crate) enum PublicKey {
     Raw(Bytes),
 }
 
+impl From<&PrivateKey> for PublicKey {
+    fn from(priv_key: &PrivateKey) -> Self {
+        match priv_key {
+            PrivateKey::Rsa(private_key) => {
+                PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(
+                    private_key
+                        .to_public_key()
+                        .to_pkcs1_der()
+                        .unwrap()
+                        .as_bytes(),
+                ))
+            }
+        }
+    }
+}
+
+impl From<Bytes> for PublicKey {
+    fn from(value: Bytes) -> Self {
+        PublicKey::from_bytes(&value)
+    }
+}
+
 impl std::fmt::Debug for PublicKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
             Self::Rsa(x) => write!(f, "<rsa_pub: {:?}>", x),
@@ -146,7 +170,13 @@ impl From<CapturedX509Certificate> for Certificate {
                 .unwrap_or_else(|_error| {
                     return "undecodable".to_string();
                 }),
-            public_key: PublicKey::from(cert.public_key_data()),
+            public_key: match cert.key_algorithm().unwrap() {
+                x509_certificate::KeyAlgorithm::Rsa => {
+                    PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(&cert.public_key_data()))
+                }
+                x509_certificate::KeyAlgorithm::Ecdsa(_) => PublicKey::Raw(cert.public_key_data()),
+                x509_certificate::KeyAlgorithm::Ed25519 => PublicKey::Raw(cert.public_key_data()),
+            },
             original: cert,
         }
     }
@@ -162,12 +192,6 @@ impl PublicKey {
     }
 }
 
-impl From<Bytes> for PublicKey {
-    fn from(value: Bytes) -> Self {
-        PublicKey::from_bytes(&value)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DistributedCert {
     pub(crate) certificate: Certificate,
@@ -175,26 +199,20 @@ pub(crate) struct DistributedCert {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DistributedPublicKey {
-    pub(crate) public_key: PublicKey,
-    pub(crate) locations: Locations,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum JwtSigner {
     Unknown,
-    CertKeyPair(Rc<RefCell<cert_key_pair::CertKeyPair>>),
-    PrivateKey(Rc<RefCell<distributed_private_key::DistributedPrivateKey>>),
+    CertKeyPair(Rc<RefCell<CertKeyPair>>),
+    PrivateKey(Rc<RefCell<DistributedPrivateKey>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Signee {
-    CertKeyPair(Rc<RefCell<cert_key_pair::CertKeyPair>>),
-    Jwt(Rc<RefCell<distributed_jwt::DistributedJwt>>),
+    CertKeyPair(Rc<RefCell<CertKeyPair>>),
+    Jwt(Rc<RefCell<DistributedJwt>>),
 }
 
 impl Display for Signee {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Signee::CertKeyPair(cert_key_pair) => {
                 write!(f, "CertKeyPair({})", (**cert_key_pair).borrow())
@@ -205,14 +223,18 @@ impl Display for Signee {
 }
 
 impl Signee {
-    fn regenerate(&mut self, sign_with: Option<&InMemorySigningKeyPair>) {
+    fn regenerate(
+        &mut self,
+        original_signing_public_key: &PublicKey,
+        new_signing_key: Option<&InMemorySigningKeyPair>,
+    ) {
         match self {
             Self::CertKeyPair(cert_key_pair) => {
-                (**cert_key_pair).borrow_mut().regenerate(sign_with);
+                (**cert_key_pair).borrow_mut().regenerate(new_signing_key);
             }
             Self::Jwt(jwt) => {
-                match sign_with {
-                    Some(key_pair) => (**jwt).borrow_mut().regenerate(key_pair),
+                match new_signing_key {
+                    Some(key_pair) => (**jwt).borrow_mut().regenerate(&original_signing_public_key, key_pair),
                     None => panic!(
                     "Cannot regenerate a jwt without a signing key, regenerate may only be called on a signee that is a root cert-key-pair"
                 ),
@@ -231,14 +253,7 @@ fn encode_tbs_cert_to_der(tbs_certificate: &rfc5280::TbsCertificate) -> Vec<u8> 
     tbs_der
 }
 
-fn generate_rsa_key(rng: &mut rand::prelude::ThreadRng) -> (RsaPrivateKey, InMemorySigningKeyPair) {
-    let rsa_private_key = rsa::RsaPrivateKey::new(rng, 2048).unwrap();
-    let rsa_pkcs8_der_bytes: Vec<u8> = rsa_private_key.to_pkcs8_der().unwrap().as_bytes().into();
-    let key_pair = InMemorySigningKeyPair::from_pkcs8_der(&rsa_pkcs8_der_bytes).unwrap();
-    (rsa_private_key, key_pair)
-}
-
-fn encode_resource_data_entry(k8slocation: &locations::K8sLocation, value: &String) -> String {
+fn encode_resource_data_entry(k8slocation: &K8sLocation, value: &String) -> String {
     if k8slocation.resource_location.kind == "Secret" {
         STANDARD.encode(value.as_bytes())
     } else {
@@ -247,7 +262,7 @@ fn encode_resource_data_entry(k8slocation: &locations::K8sLocation, value: &Stri
 }
 
 fn decode_resource_data_entry(
-    k8slocation: &locations::K8sLocation,
+    k8slocation: &K8sLocation,
     value_at_json_pointer: &&mut String,
 ) -> String {
     let decoded = if k8slocation.resource_location.kind == "Secret" {
@@ -265,10 +280,7 @@ fn decode_resource_data_entry(
     decoded
 }
 
-async fn get_etcd_yaml(
-    client: &mut InMemoryK8sEtcd,
-    k8slocation: &locations::K8sLocation,
-) -> Value {
+async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) -> Value {
     serde_yaml::from_str(&String::from_utf8_lossy(
         &(client
             .get(k8s_etcd::k8slocation_to_etcd_key(k8slocation))
@@ -310,11 +322,9 @@ impl ClusterCryptoObjects {
             internal: Mutex::new(ClusterCryptoObjectsInternal::new()),
         }
     }
-
     pub(crate) async fn display(&self) {
         self.internal.lock().await.display();
     }
-
     pub(crate) async fn commit_to_etcd_and_disk(&self, etcd_client: &mut InMemoryK8sEtcd) {
         self.internal
             .lock()
@@ -322,30 +332,27 @@ impl ClusterCryptoObjects {
             .commit_to_etcd_and_disk(etcd_client)
             .await;
     }
-
     pub(crate) async fn regenerate_crypto(&self) {
         self.internal.lock().await.regenerate_crypto();
     }
-
     pub(crate) async fn fill_signees(&mut self) {
         self.internal.lock().await.fill_signees();
     }
-
     pub(crate) async fn pair_certs_and_keys(&mut self) {
         self.internal.lock().await.pair_certs_and_keys();
     }
-
+    pub(crate) async fn associate_public_keys(&mut self) {
+        self.internal.lock().await.associate_public_keys();
+    }
     pub(crate) async fn fill_jwt_signers(&mut self) {
         self.internal.lock().await.fill_jwt_signers();
     }
-
     pub(crate) async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
         self.internal
             .lock()
             .await
             .process_k8s_static_resources(k8s_dir);
     }
-
     pub(crate) async fn process_etcd_resources(
         &mut self,
         etcd_client: Arc<Mutex<InMemoryK8sEtcd>>,
@@ -405,7 +412,7 @@ impl ClusterCryptoObjectsInternal {
         }
 
         for private_key in self.private_keys.values() {
-            (**private_key).borrow_mut().regenerate(None)
+            (**private_key).borrow_mut().regenerate()
         }
     }
 
@@ -418,7 +425,7 @@ impl ClusterCryptoObjectsInternal {
                     &(**cert_key_pair).borrow().distributed_private_key
                 {
                     match verify_jwt(
-                        &(**distributed_private_key).borrow(),
+                        &PublicKey::from(&(**distributed_private_key).borrow().key),
                         &(**distributed_jwt).borrow(),
                     ) {
                         Ok(
@@ -427,9 +434,7 @@ impl ClusterCryptoObjectsInternal {
                             maybe_signer = JwtSigner::CertKeyPair(Rc::clone(cert_key_pair));
                             break;
                         }
-                        Err(_error) => {
-                            // println!("Error verifying JWT: {}", error);
-                        }
+                        Err(_error) => {}
                     }
                 }
             }
@@ -437,17 +442,19 @@ impl ClusterCryptoObjectsInternal {
             match &maybe_signer {
                 JwtSigner::Unknown => {
                     // Try free form private keys
-                    for private_key in self.private_keys.values() {
-                        match verify_jwt(&(**private_key).borrow(), &(**distributed_jwt).borrow()) {
+                    for distributed_private_key in self.private_keys.values() {
+                        match verify_jwt(
+                            &PublicKey::from(&(**distributed_private_key).borrow().key),
+                            &(**distributed_jwt).borrow(),
+                        ) {
                             Ok(
                                 _claims, /* We don't care about the claims, only that the signature is correct */
                             ) => {
-                                maybe_signer = JwtSigner::PrivateKey(Rc::clone(private_key));
+                                maybe_signer =
+                                    JwtSigner::PrivateKey(Rc::clone(distributed_private_key));
                                 break;
                             }
-                            Err(_error) => {
-                                // println!("Error verifying JWT: {}", error);
-                            }
+                            Err(_error) => {}
                         }
                     }
                 }
@@ -547,6 +554,7 @@ impl ClusterCryptoObjectsInternal {
                 distributed_cert: Rc::clone(distributed_cert),
                 signer: true_signing_cert,
                 signees: Vec::new(),
+                associated_public_keys: Vec::new(),
             }));
 
             if let Occupied(private_key) = self
@@ -572,6 +580,17 @@ impl ClusterCryptoObjectsInternal {
                     (**distributed_cert).borrow().certificate.subject
                 );
             } else {
+                for (public_key, _private_key) in &self.public_to_private {
+                    if let PublicKey::Rsa(public_key) = public_key {
+                        println!("- {:#?}", public_key);
+                    }
+                }
+
+                println!(
+                    "{:#?}",
+                    (**distributed_cert).borrow().certificate.public_key.clone()
+                );
+
                 panic!(
                 "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
                 (**distributed_cert).borrow().certificate.subject
@@ -579,6 +598,33 @@ impl ClusterCryptoObjectsInternal {
             }
 
             self.cert_key_pairs.push(pair);
+        }
+    }
+
+    fn associate_public_keys(&mut self) {
+        for cert_key_pair in &self.cert_key_pairs {
+            if let Occupied(public_key_entry) = self.public_keys.entry(
+                (*(**cert_key_pair).borrow().distributed_cert)
+                    .borrow()
+                    .certificate
+                    .public_key
+                    .clone(),
+            ) {
+                (*cert_key_pair)
+                    .borrow_mut()
+                    .associated_public_keys
+                    .push(Rc::clone(public_key_entry.get()));
+            }
+        }
+
+        for distributed_private_key in self.private_keys.values() {
+            let cert_pub: PublicKey = (&(**distributed_private_key).borrow().key).into();
+
+            if let Occupied(public_key_entry) = self.public_keys.entry(cert_pub) {
+                (*distributed_private_key)
+                    .borrow_mut()
+                    .associated_public_key = Some(Rc::clone(public_key_entry.get()));
+            }
         }
     }
 
@@ -766,16 +812,8 @@ impl ClusterCryptoObjectsInternal {
     fn process_pem_private_key(&mut self, pem: &pem::Pem, location: &Location) {
         let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
-        let bytes = bytes::Bytes::copy_from_slice(
-            rsa_private_key
-                .to_public_key()
-                .to_pkcs1_der()
-                .unwrap()
-                .as_bytes(),
-        );
-
-        let public_part = PublicKey::from_bytes(&bytes);
         let private_part = PrivateKey::Rsa(rsa_private_key);
+        let public_part = PublicKey::from(&private_part);
 
         self.register_private_key_public_key_mapping(public_part, &private_part);
         self.register_private_key(private_part, location);
@@ -798,6 +836,7 @@ impl ClusterCryptoObjectsInternal {
                         locations: Locations(vec![location.clone()].into_iter().collect()),
                         key: private_part,
                         signees: vec![],
+                        associated_public_key: None,
                     },
                 )));
             }
@@ -924,10 +963,12 @@ impl ClusterCryptoObjectsInternal {
 
         match self.public_keys.entry(rsa_public_key.clone()) {
             Vacant(distributed_public_key_entry) => {
-                distributed_public_key_entry.insert(Rc::new(RefCell::new(DistributedPublicKey {
-                    locations: Locations(vec![location.clone()].into_iter().collect()),
-                    public_key: rsa_public_key,
-                })));
+                distributed_public_key_entry.insert(Rc::new(RefCell::new(
+                    distributed_public_key::DistributedPublicKey {
+                        locations: Locations(vec![location.clone()].into_iter().collect()),
+                        public_key: rsa_public_key,
+                    },
+                )));
             }
 
             Occupied(distributed_private_key_entry) => {
@@ -942,19 +983,12 @@ impl ClusterCryptoObjectsInternal {
 }
 
 fn verify_jwt(
-    distributed_private_key: &DistributedPrivateKey,
+    public_key: &PublicKey,
     distributed_jwt: &distributed_jwt::DistributedJwt,
 ) -> Result<jwt_simple::prelude::JWTClaims<Map<String, Value>>, jwt_simple::Error> {
-    match &distributed_private_key.key {
-        PrivateKey::Rsa(rsa_private_key) => {
-            // TODO: Use public to private map instead? Should be faster
-            let public_key = rsa_private_key.to_public_key();
-
-            jwt_simple::prelude::RS256PublicKey::from_der(
-                public_key.to_pkcs1_der().unwrap().as_bytes(),
-            )
-            .unwrap()
-        }
+    match &public_key {
+        PublicKey::Rsa(bytes) => jwt_simple::prelude::RS256PublicKey::from_der(bytes).unwrap(),
+        PublicKey::Raw(_) => panic!("Raw public keys are not supported"),
     }
     .verify_token::<Map<String, Value>>(&distributed_jwt.jwt.str, None)
 }

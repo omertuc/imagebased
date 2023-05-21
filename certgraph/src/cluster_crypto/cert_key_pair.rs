@@ -1,37 +1,25 @@
-use super::decode_resource_data_entry;
-use super::distributed_private_key;
-use super::encode_resource_data_entry;
-use super::encode_tbs_cert_to_der;
-use super::generate_rsa_key;
-use super::get_etcd_yaml;
-use super::locations::FileContentLocation;
-use super::locations::FileLocation;
-use super::locations::K8sLocation;
-use super::locations::Location;
-use super::pem_bundle_replace_pem_at_index;
-use super::Certificate;
-use super::DistributedCert;
-use super::PrivateKey;
-use super::Signee;
-use crate::cluster_crypto::locations::LocationValueType;
-use crate::k8s_etcd::InMemoryK8sEtcd;
+use super::{
+    cyrpto_utils::generate_rsa_key,
+    decode_resource_data_entry,
+    distributed_public_key::DistributedPublicKey,
+    locations::{FileContentLocation, FileLocation, K8sLocation, Location},
+    pem_bundle_replace_pem_at_index,
+};
+use super::{
+    distributed_private_key, encode_resource_data_entry, encode_tbs_cert_to_der, get_etcd_yaml,
+    Certificate, DistributedCert, PrivateKey, Signee,
+};
+use crate::{cluster_crypto::locations::LocationValueType, k8s_etcd::InMemoryK8sEtcd};
 use bcder::BitString;
 use bytes::Bytes;
 use pkcs1::EncodeRsaPrivateKey;
-use rsa::signature::Signer;
-use rsa::RsaPrivateKey;
+use rsa::{signature::Signer, RsaPrivateKey};
 use serde_json::Value;
-use std::cell::RefCell;
-use std::fmt::Display;
-use std::rc::Rc;
-use tokio;
-use tokio::io::AsyncReadExt;
-use x509_certificate::rfc5280;
-use x509_certificate::CapturedX509Certificate;
-use x509_certificate::InMemorySigningKeyPair;
-use x509_certificate::KeyAlgorithm;
-use x509_certificate::Sign;
-use x509_certificate::X509Certificate;
+use std::{cell::RefCell, fmt::Display, rc::Rc};
+use tokio::{self, io::AsyncReadExt};
+use x509_certificate::{
+    rfc5280, CapturedX509Certificate, InMemorySigningKeyPair, KeyAlgorithm, Sign, X509Certificate,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CertKeyPair {
@@ -44,6 +32,9 @@ pub(crate) struct CertKeyPair {
     pub(crate) signer: Option<Rc<RefCell<DistributedCert>>>,
     /// The signees are the certs or jwts that this cert has signed
     pub(crate) signees: Vec<Signee>,
+    /// Sometimes cert public keys also appear on their own, outside the cert, so we need to track
+    /// them
+    pub(crate) associated_public_keys: Vec<Rc<RefCell<DistributedPublicKey>>>,
 }
 
 impl CertKeyPair {
@@ -51,16 +42,19 @@ impl CertKeyPair {
         let (new_cert_subject_key_pair, rsa_private_key, new_cert) = self.re_sign_cert(sign_with);
         (*self.distributed_cert).borrow_mut().certificate = Certificate::from(new_cert);
 
+        for signee in &mut self.signees {
+            signee.regenerate(
+                &(*self.distributed_cert).borrow().certificate.public_key,
+                Some(&new_cert_subject_key_pair),
+            );
+        }
+
         // This condition exists because not all certs originally had a private key
         // associated with them (e.g. some private keys are discarded during install time),
         // so we only want to write the private key back into the graph incase there was
         // one there to begin with.
         if let Some(distributed_private_key) = &mut self.distributed_private_key {
             (**distributed_private_key).borrow_mut().key = PrivateKey::Rsa(rsa_private_key)
-        }
-
-        for signee in &mut self.signees {
-            signee.regenerate(Some(&new_cert_subject_key_pair));
         }
     }
 
@@ -358,6 +352,10 @@ impl Display for CertKeyPair {
 
         for signee in &self.signees {
             writeln!(f, "- {}", signee)?;
+        }
+
+        for associated_public_key in &self.associated_public_keys {
+            writeln!(f, "* {}", (**associated_public_key).borrow())?;
         }
 
         Ok(())

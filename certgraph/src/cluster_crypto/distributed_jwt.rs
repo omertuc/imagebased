@@ -1,15 +1,9 @@
+use super::{
+    encode_resource_data_entry, get_etcd_yaml,
+    locations::{FileLocation, K8sLocation, Location, LocationValueType, Locations},
+    verify_jwt, Jwt, JwtSigner, PublicKey,
+};
 use crate::k8s_etcd::InMemoryK8sEtcd;
-
-use super::encode_resource_data_entry;
-use super::get_etcd_yaml;
-use super::locations::FileLocation;
-use super::locations::K8sLocation;
-use super::locations::Location;
-use super::locations::LocationValueType;
-use super::locations::Locations;
-use super::verify_jwt;
-use super::Jwt;
-use super::JwtSigner;
 use jwt_simple::prelude::RSAKeyPairLike;
 use serde_json::Value;
 use x509_certificate::InMemorySigningKeyPair;
@@ -22,35 +16,46 @@ pub(crate) struct DistributedJwt {
 }
 
 impl DistributedJwt {
-    pub(crate) fn regenerate(&mut self, sign_with: &InMemorySigningKeyPair) {
-        match &self.signer {
+    pub(crate) fn regenerate(
+        &mut self,
+        original_signing_key: &PublicKey,
+        new_signing_key: &InMemorySigningKeyPair,
+    ) {
+        let new_key = match &self.signer {
             JwtSigner::Unknown => panic!("Cannot regenerate JWT with unknown signer"),
-            JwtSigner::CertKeyPair(cert_key_pair) => {
-                match &(**cert_key_pair).borrow().distributed_private_key {
-                    Some(private_key) => match verify_jwt(&(**private_key).borrow(), self) {
-                        Ok(claims) => {
-                            match sign_with {
-                                InMemorySigningKeyPair::Ecdsa(_, _, _) => {
-                                    panic!("Unsupported key type")
-                                }
-                                InMemorySigningKeyPair::Ed25519(_) => {
-                                    panic!("Unsupported key type")
-                                }
-                                InMemorySigningKeyPair::Rsa(_rsa_key_pair, bytes) => {
-                                    let key =
-                                        jwt_simple::prelude::RS256KeyPair::from_der(bytes).unwrap();
-                                    let token = key.sign(claims);
-                                    self.jwt.str = token.unwrap().to_string();
-                                }
-                            };
-                        }
-                        Err(_) => panic!("Failed to parse token"),
-                    },
-                    None => panic!("Cannot regenerate JWT with unknown private key"),
-                };
+            JwtSigner::CertKeyPair(_cert_key_pair) => {
+                self.resign(original_signing_key, new_signing_key)
             }
-            JwtSigner::PrivateKey(_) => panic!("Unsupported key type"),
+            JwtSigner::PrivateKey(_private_key) => {
+                self.resign(&original_signing_key, new_signing_key)
+            }
         };
+        self.jwt.str = new_key;
+    }
+
+    fn resign(
+        &self,
+        original_public_key: &PublicKey,
+        new_signing_key_pair: &InMemorySigningKeyPair,
+    ) -> String {
+        match verify_jwt(&original_public_key, self) {
+            Ok(claims) => match new_signing_key_pair {
+                InMemorySigningKeyPair::Ecdsa(_, _, _) => {
+                    panic!("Unsupported key type")
+                }
+                InMemorySigningKeyPair::Ed25519(_) => {
+                    panic!("Unsupported key type")
+                }
+                InMemorySigningKeyPair::Rsa(_rsa_key_pair, bytes) => {
+                    jwt_simple::prelude::RS256KeyPair::from_der(bytes)
+                        .unwrap()
+                        .sign(claims)
+                        .unwrap()
+                        .to_string()
+                }
+            },
+            Err(_) => panic!("Failed to parse token"),
+        }
     }
 
     pub(crate) async fn commit_to_etcd_and_disk(&self, etcd_client: &mut InMemoryK8sEtcd) {
