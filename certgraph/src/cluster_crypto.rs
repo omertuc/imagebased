@@ -38,12 +38,41 @@ use std::{
 use tokio::sync::Mutex;
 use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair};
 
-use self::locations::Locations;
+use self::{
+    cert_key_pair::CertKeyPair, distributed_jwt::DistributedJwt,
+    distributed_private_key::DistributedPrivateKey, locations::Locations,
+};
 
 pub(crate) mod cert_key_pair;
 pub(crate) mod distributed_jwt;
 pub(crate) mod distributed_private_key;
 pub(crate) mod locations;
+
+/// This is the main struct that holds all the crypto objects we've found in the cluster and the
+/// locations where we found them, and how they relate to each other.
+pub(crate) struct ClusterCryptoObjectsInternal {
+    /// At the end of the day we're scanning the entire cluster for private keys, public keys
+    /// certificates, and jwts. These four hashmaps is where we store all of them. The reason
+    /// they're hashmaps and not vectors is because every one of those objects we encounter might
+    /// be found in multiple locations. The value types here (Distributed*) hold a list of
+    /// locations where the key/cert was found, and the list of locations for each cert/key grows
+    /// as we scan more and more resources. The hashmap keys are of-course hashables so we can
+    /// easily check if we already encountered the object before.
+    pub(crate) private_keys: HashMap<PrivateKey, Rc<RefCell<DistributedPrivateKey>>>,
+    pub(crate) public_keys: HashMap<PublicKey, Rc<RefCell<DistributedPublicKey>>>,
+    pub(crate) certs: HashMap<Certificate, Rc<RefCell<DistributedCert>>>,
+    pub(crate) jwts: HashMap<Jwt, Rc<RefCell<DistributedJwt>>>,
+
+    /// Every time we encounter a private key, we extract the public key
+    /// from it and add to this mapping. This will later allow us to easily
+    /// associate certificates with their matching private key
+    pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
+
+    /// After collecting all certs and private keys, we go through the list of certs and try to
+    /// find a private key that matches the public key of the cert (with the help of
+    /// public_to_private) and populate this list of pairs.
+    pub(crate) cert_key_pairs: Vec<Rc<RefCell<CertKeyPair>>>,
+}
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PrivateKey {
@@ -62,16 +91,13 @@ impl std::fmt::Debug for PrivateKey {
 pub(crate) enum PublicKey {
     Rsa(Bytes),
     Raw(Bytes),
-    // Dummy,
 }
 
 impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // Self::Rsa(_) => write!(f, "<rsa_pub>"),
             Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
             Self::Rsa(x) => write!(f, "<rsa_pub: {:?}>", x),
-            // Self::Dummy => write!(f, "Dummy"),
         }
     }
 }
@@ -274,8 +300,6 @@ fn pem_bundle_replace_pem_at_index(
     newbundle
 }
 
-/// This is the main struct that holds all the crypto objects we've found in the cluster
-/// and the locations where we found them, and how they relate to each other.
 pub(crate) struct ClusterCryptoObjects {
     internal: Mutex<ClusterCryptoObjectsInternal>,
 }
@@ -299,11 +323,8 @@ impl ClusterCryptoObjects {
             .await;
     }
 
-    pub(crate) async fn regenerate_certificates_and_keys(&self) {
-        self.internal
-            .lock()
-            .await
-            .regenerate_certificates_and_keys();
+    pub(crate) async fn regenerate_crypto(&self) {
+        self.internal.lock().await.regenerate_crypto();
     }
 
     pub(crate) async fn fill_signees(&mut self) {
@@ -335,30 +356,6 @@ impl ClusterCryptoObjects {
             .process_etcd_resources(etcd_client)
             .await;
     }
-}
-
-pub(crate) struct ClusterCryptoObjectsInternal {
-    /// At the end of the day we're scanning the entire cluster for private keys, public keys
-    /// certificates, and jwts. These four hashmaps is where we store all of them. The reason
-    /// they're hashmaps and not vectors is because every one of those objects we encounter might
-    /// be found in multiple locations. The value types here (Distributed*) hold a list of
-    /// locations where the key/cert was found, and the list of locations for each cert/key grows
-    /// as we scan more and more resources.
-    pub(crate) private_keys:
-        HashMap<PrivateKey, Rc<RefCell<distributed_private_key::DistributedPrivateKey>>>,
-    pub(crate) public_keys: HashMap<PublicKey, Rc<RefCell<DistributedPublicKey>>>,
-    pub(crate) certs: HashMap<Certificate, Rc<RefCell<DistributedCert>>>,
-    pub(crate) jwts: HashMap<Jwt, Rc<RefCell<distributed_jwt::DistributedJwt>>>,
-
-    /// Every time we encounter a private key, we extract the public key
-    /// from it and add to this mapping. This will later allow us to easily
-    /// associate certificates with their matching private key
-    pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
-
-    /// After collecting all certs and private keys, we go through the list of certs and try to
-    /// find a private key that matches the public key of the cert (with the help of
-    /// public_to_private) and populate this list of pairs.
-    pub(crate) cert_key_pairs: Vec<Rc<RefCell<cert_key_pair::CertKeyPair>>>,
 }
 
 impl ClusterCryptoObjectsInternal {
@@ -398,13 +395,17 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    fn regenerate_certificates_and_keys(&mut self) {
+    fn regenerate_crypto(&mut self) {
         for cert_key_pair in &self.cert_key_pairs {
             if (**cert_key_pair).borrow().signer.is_some() {
                 continue;
             }
 
             (**cert_key_pair).borrow_mut().regenerate(None)
+        }
+
+        for private_key in self.private_keys.values() {
+            (**private_key).borrow_mut().regenerate(None)
         }
     }
 
@@ -941,7 +942,7 @@ impl ClusterCryptoObjectsInternal {
 }
 
 fn verify_jwt(
-    distributed_private_key: &distributed_private_key::DistributedPrivateKey,
+    distributed_private_key: &DistributedPrivateKey,
     distributed_jwt: &distributed_jwt::DistributedJwt,
 ) -> Result<jwt_simple::prelude::JWTClaims<Map<String, Value>>, jwt_simple::Error> {
     match &distributed_private_key.key {
