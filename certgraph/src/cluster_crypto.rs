@@ -554,7 +554,7 @@ impl ClusterCryptoObjectsInternal {
                 distributed_cert: Rc::clone(distributed_cert),
                 signer: true_signing_cert,
                 signees: Vec::new(),
-                associated_public_keys: Vec::new(),
+                associated_public_key: None,
             }));
 
             if let Occupied(private_key) = self
@@ -610,10 +610,8 @@ impl ClusterCryptoObjectsInternal {
                     .public_key
                     .clone(),
             ) {
-                (*cert_key_pair)
-                    .borrow_mut()
-                    .associated_public_keys
-                    .push(Rc::clone(public_key_entry.get()));
+                (*cert_key_pair).borrow_mut().associated_public_key =
+                    Some(Rc::clone(public_key_entry.get()));
             }
         }
 
@@ -675,7 +673,34 @@ impl ClusterCryptoObjectsInternal {
                             continue;
                         }
 
-                        self.process_k8s_secret_data_entry(key, value, k8s_resource_location);
+                        self.process_k8s_secret_data_entry(
+                            key,
+                            value,
+                            k8s_resource_location,
+                            true,
+                            "data",
+                        );
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+
+        if let Some(data) = value.as_object().unwrap().get("annotations") {
+            match data {
+                Value::Object(data) => {
+                    for (key, value) in data.iter() {
+                        if rules::IGNORE_LIST_SECRET.contains(key) {
+                            continue;
+                        }
+
+                        self.process_k8s_secret_data_entry(
+                            key,
+                            value,
+                            k8s_resource_location,
+                            false,
+                            "annotations",
+                        );
                     }
                 }
                 _ => todo!(),
@@ -688,30 +713,36 @@ impl ClusterCryptoObjectsInternal {
         key: &str,
         value: &Value,
         k8s_resource_location: &K8sResourceLocation,
+        base64_decode: bool,
+        path: &str,
     ) {
         if let Value::String(string_value) = value {
-            if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
-                let value = String::from_utf8(value).unwrap_or_else(|_| {
+            let value = if base64_decode {
+                if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
+                    String::from_utf8(value).unwrap_or_else(|_| {
+                        panic!("Failed to decode base64 {}", key);
+                    })
+                } else {
                     panic!("Failed to decode base64 {}", key);
-                });
-
-                let location = &Location::K8s(K8sLocation {
-                    resource_location: k8s_resource_location.clone(),
-                    yaml_location: YamlLocation {
-                        json_pointer: format!("/data/{key}"),
-                        value: LocationValueType::Unknown,
-                    },
-                });
-
-                if let Some(_) = self.process_pem_bundle(&value, location) {
-                    return;
-                };
-
-                if let Some(_) = self.process_jwt(&value, location) {
-                    return;
                 }
             } else {
-                panic!("Failed to decode base64 {}", string_value);
+                string_value.clone()
+            };
+
+            let location = &Location::K8s(K8sLocation {
+                resource_location: k8s_resource_location.clone(),
+                yaml_location: YamlLocation {
+                    json_pointer: format!("/{path}/{key}"),
+                    value: LocationValueType::Unknown,
+                },
+            });
+
+            if let Some(_) = self.process_pem_bundle(&value, location) {
+                return;
+            };
+
+            if let Some(_) = self.process_jwt(&value, location) {
+                return;
             }
         }
     }

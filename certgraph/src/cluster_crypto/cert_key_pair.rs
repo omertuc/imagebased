@@ -34,7 +34,7 @@ pub(crate) struct CertKeyPair {
     pub(crate) signees: Vec<Signee>,
     /// Sometimes cert public keys also appear on their own, outside the cert, so we need to track
     /// them
-    pub(crate) associated_public_keys: Vec<Rc<RefCell<DistributedPublicKey>>>,
+    pub(crate) associated_public_key: Option<Rc<RefCell<DistributedPublicKey>>>,
 }
 
 impl CertKeyPair {
@@ -354,7 +354,7 @@ impl Display for CertKeyPair {
             writeln!(f, "- {}", signee)?;
         }
 
-        for associated_public_key in &self.associated_public_keys {
+        if let Some(associated_public_key) = &self.associated_public_key {
             writeln!(f, "* {}", (**associated_public_key).borrow())?;
         }
 
