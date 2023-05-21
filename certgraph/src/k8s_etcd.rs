@@ -1,3 +1,4 @@
+use crate::cluster_crypto::locations::K8sLocation;
 use etcd_client::{Client as EtcdClient, GetOptions};
 use futures_util::future::join_all;
 use std::collections::HashMap;
@@ -6,7 +7,6 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use crate::cluster_crypto::K8sLocation;
 
 // An etcd client wrapper backed by an in-memory hashmap. All reads are served from memory, with
 // fallback to actual etcd. All writes are strictly to memory. Also supports eventually committing

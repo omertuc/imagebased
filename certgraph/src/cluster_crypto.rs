@@ -40,10 +40,10 @@ use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair}
 
 use self::locations::Locations;
 
-mod cert_key_pair;
-mod distributed_jwt;
-mod distributed_private_key;
-mod locations;
+pub(crate) mod cert_key_pair;
+pub(crate) mod distributed_jwt;
+pub(crate) mod distributed_private_key;
+pub(crate) mod locations;
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PrivateKey {

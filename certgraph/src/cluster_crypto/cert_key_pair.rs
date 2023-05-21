@@ -18,19 +18,19 @@ use crate::k8s_etcd::InMemoryK8sEtcd;
 use bcder::BitString;
 use bytes::Bytes;
 use pkcs1::EncodeRsaPrivateKey;
+use rsa::signature::Signer;
 use rsa::RsaPrivateKey;
-use rsa::signature::SignerMut;
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
-use x509_certificate::Sign;
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::rc::Rc;
 use tokio;
+use tokio::io::AsyncReadExt;
 use x509_certificate::rfc5280;
 use x509_certificate::CapturedX509Certificate;
 use x509_certificate::InMemorySigningKeyPair;
 use x509_certificate::KeyAlgorithm;
+use x509_certificate::Sign;
 use x509_certificate::X509Certificate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
