@@ -1,5 +1,5 @@
 use super::{
-    cyrpto_utils::generate_rsa_key, distributed_public_key::DistributedPublicKey,
+    crypto_utils::generate_rsa_key, distributed_public_key::DistributedPublicKey,
     locations::Locations, PrivateKey, PublicKey, Signee,
 };
 use std::{self, cell::RefCell, fmt::Display, rc::Rc};

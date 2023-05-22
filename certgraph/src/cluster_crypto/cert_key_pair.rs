@@ -1,5 +1,5 @@
 use super::{
-    cyrpto_utils::generate_rsa_key,
+    crypto_utils::generate_rsa_key,
     decode_resource_data_entry,
     distributed_public_key::DistributedPublicKey,
     locations::{FileContentLocation, FileLocation, K8sLocation, Location},

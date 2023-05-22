@@ -52,10 +52,10 @@ async fn recertify(
     collect_crypto_objects(cluster_crypto, &in_memory_etcd_client, static_resource_dir).await;
     establish_relationships(cluster_crypto).await;
     regenerate_cryptographic_objects(&cluster_crypto).await;
-    commit_cyrptographic_objects_back(&in_memory_etcd_client, &cluster_crypto).await;
+    commit_cryptographic_objects_back(&in_memory_etcd_client, &cluster_crypto).await;
 }
 
-async fn commit_cyrptographic_objects_back(
+async fn commit_cryptographic_objects_back(
     in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>,
     cluster_crypto: &ClusterCryptoObjects,
 ) {

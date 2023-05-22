@@ -43,7 +43,7 @@ use self::{
 };
 
 pub(crate) mod cert_key_pair;
-pub(crate) mod cyrpto_utils;
+pub(crate) mod crypto_utils;
 pub(crate) mod distributed_jwt;
 pub(crate) mod distributed_private_key;
 pub(crate) mod distributed_public_key;
