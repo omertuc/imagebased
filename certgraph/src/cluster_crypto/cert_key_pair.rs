@@ -4,11 +4,11 @@ use super::{
     distributed_public_key::DistributedPublicKey,
     get_filesystem_yaml,
     locations::{FileContentLocation, FileLocation, K8sLocation, Location},
-    read_file_to_string, pem_utils,
+    pem_utils, read_file_to_string,
 };
 use super::{
-    distributed_private_key, encode_resource_data_entry, encode_tbs_cert_to_der, get_etcd_yaml,
-    Certificate, DistributedCert, PrivateKey, Signee,
+    distributed_private_key, encode_resource_data_entry, encode_tbs_cert_to_der, get_etcd_yaml, Certificate, DistributedCert, PrivateKey,
+    Signee,
 };
 use crate::{cluster_crypto::locations::LocationValueType, k8s_etcd::InMemoryK8sEtcd};
 use bcder::BitString;
@@ -18,14 +18,11 @@ use rsa::{signature::Signer, RsaPrivateKey};
 use serde_json::Value;
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 use tokio::{self, io::AsyncReadExt};
-use x509_certificate::{
-    rfc5280, CapturedX509Certificate, InMemorySigningKeyPair, KeyAlgorithm, Sign, X509Certificate,
-};
+use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair, KeyAlgorithm, Sign, X509Certificate};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CertKeyPair {
-    pub(crate) distributed_private_key:
-        Option<Rc<RefCell<distributed_private_key::DistributedPrivateKey>>>,
+    pub(crate) distributed_private_key: Option<Rc<RefCell<distributed_private_key::DistributedPrivateKey>>>,
     pub(crate) distributed_cert: Rc<RefCell<DistributedCert>>,
 
     /// The signer is the cert that signed this cert. If this is a self-signed cert, then this will
@@ -62,11 +59,7 @@ impl CertKeyPair {
     pub(crate) fn re_sign_cert(
         &mut self,
         sign_with: Option<&InMemorySigningKeyPair>,
-    ) -> (
-        InMemorySigningKeyPair,
-        RsaPrivateKey,
-        CapturedX509Certificate,
-    ) {
+    ) -> (InMemorySigningKeyPair, RsaPrivateKey, CapturedX509Certificate) {
         let mut rng = rand::thread_rng();
 
         // Generate a new RSA key for this cert
@@ -108,9 +101,7 @@ impl CertKeyPair {
 
         // Encode the entire cert as DER and reload it into a CapturedX509Certificate which is the
         // type we use in our structs
-        let cert =
-            CapturedX509Certificate::from_der(X509Certificate::from(cert).encode_der().unwrap())
-                .unwrap();
+        let cert = CapturedX509Certificate::from_der(X509Certificate::from(cert).encode_der().unwrap()).unwrap();
 
         (self_new_key_pair, self_new_rsa_private_key, cert)
     }
@@ -133,11 +124,7 @@ impl CertKeyPair {
         }
     }
 
-    pub(crate) async fn commit_k8s_cert(
-        &self,
-        etcd_client: &mut InMemoryK8sEtcd,
-        k8slocation: &K8sLocation,
-    ) {
+    pub(crate) async fn commit_k8s_cert(&self, etcd_client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) {
         let resource = get_etcd_yaml(etcd_client, k8slocation).await;
 
         etcd_client
@@ -146,14 +133,7 @@ impl CertKeyPair {
                 recreate_yaml_at_location_with_new_pem(
                     resource,
                     &k8slocation.yaml_location,
-                    &pem::parse(
-                        (*self.distributed_cert)
-                            .borrow()
-                            .certificate
-                            .original
-                            .encode_pem(),
-                    )
-                    .unwrap(),
+                    &pem::parse((*self.distributed_cert).borrow().certificate.original.encode_pem()).unwrap(),
                 )
                 .as_bytes()
                 .to_vec(),
@@ -166,19 +146,11 @@ impl CertKeyPair {
             for location in (**private_key).borrow().locations.0.iter() {
                 match location {
                     Location::K8s(k8slocation) => {
-                        self.commit_k8s_private_key(
-                            etcd_client,
-                            &k8slocation,
-                            &(**private_key).borrow(),
-                        )
-                        .await;
+                        self.commit_k8s_private_key(etcd_client, &k8slocation, &(**private_key).borrow())
+                            .await;
                     }
                     Location::Filesystem(filelocation) => {
-                        self.commit_filesystem_private_key(
-                            &filelocation,
-                            &(**private_key).borrow(),
-                        )
-                        .await;
+                        self.commit_filesystem_private_key(&filelocation, &(**private_key).borrow()).await;
                     }
                 }
             }
@@ -196,13 +168,9 @@ impl CertKeyPair {
         etcd_client
             .put(
                 &k8slocation.as_etcd_key(),
-                recreate_yaml_at_location_with_new_pem(
-                    resource,
-                    &k8slocation.yaml_location,
-                    &distributed_private_key.key.pem(),
-                )
-                .as_bytes()
-                .to_vec(),
+                recreate_yaml_at_location_with_new_pem(resource, &k8slocation.yaml_location, &distributed_private_key.key.pem())
+                    .as_bytes()
+                    .to_vec(),
             )
             .await;
     }
@@ -213,38 +181,25 @@ impl CertKeyPair {
         private_key: &distributed_private_key::DistributedPrivateKey,
     ) {
         let private_key_pem = match &private_key.key {
-            PrivateKey::Rsa(rsa_private_key) => pem::Pem::new(
-                "RSA PRIVATE KEY",
-                rsa_private_key.to_pkcs1_der().unwrap().as_bytes(),
-            ),
+            PrivateKey::Rsa(rsa_private_key) => pem::Pem::new("RSA PRIVATE KEY", rsa_private_key.to_pkcs1_der().unwrap().as_bytes()),
         };
 
         tokio::fs::write(
             &filelocation.file_path,
             match &filelocation.content_location {
                 FileContentLocation::Raw(pem_location_info) => match &pem_location_info {
-                    LocationValueType::Pem(pem_location_info) => {
-                        pem_utils::pem_bundle_replace_pem_at_index(
-                            String::from_utf8(
-                                (read_file_to_string(filelocation.file_path.clone().into()).await)
-                                    .into_bytes(),
-                            )
-                            .unwrap(),
-                            pem_location_info.pem_bundle_index,
-                            &private_key_pem,
-                        )
-                    }
+                    LocationValueType::Pem(pem_location_info) => pem_utils::pem_bundle_replace_pem_at_index(
+                        String::from_utf8((read_file_to_string(filelocation.file_path.clone().into()).await).into_bytes()).unwrap(),
+                        pem_location_info.pem_bundle_index,
+                        &private_key_pem,
+                    ),
                     _ => {
                         panic!("shouldn't happen");
                     }
                 },
                 FileContentLocation::Yaml(yaml_location) => {
                     let resource = get_filesystem_yaml(filelocation).await;
-                    recreate_yaml_at_location_with_new_pem(
-                        resource,
-                        yaml_location,
-                        &private_key_pem,
-                    )
+                    recreate_yaml_at_location_with_new_pem(resource, yaml_location, &private_key_pem)
                 }
             },
         )
@@ -253,20 +208,11 @@ impl CertKeyPair {
     }
 
     pub(crate) async fn commit_filesystem_cert(&self, filelocation: &FileLocation) {
-        let mut file = tokio::fs::File::open(&filelocation.file_path)
-            .await
-            .unwrap();
+        let mut file = tokio::fs::File::open(&filelocation.file_path).await.unwrap();
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).await.unwrap();
 
-        let newpem = pem::parse(
-            (*self.distributed_cert)
-                .borrow()
-                .certificate
-                .original
-                .encode_pem(),
-        )
-        .unwrap();
+        let newpem = pem::parse((*self.distributed_cert).borrow().certificate.original.encode_pem()).unwrap();
 
         tokio::fs::write(
             &filelocation.file_path,
@@ -308,11 +254,7 @@ impl Display for CertKeyPair {
             if self.distributed_private_key.is_some() {
                 format!(
                     "priv {:03} locations {}",
-                    (**self.distributed_private_key.as_ref().unwrap())
-                        .borrow()
-                        .locations
-                        .0
-                        .len(),
+                    (**self.distributed_private_key.as_ref().unwrap()).borrow().locations.0.len(),
                     // (**self.distributed_private_key.as_ref().unwrap())
                     //     .borrow()
                     //     .locations,
@@ -322,11 +264,7 @@ impl Display for CertKeyPair {
                 "NO PRIV".to_string()
             }
         )?;
-        write!(
-            f,
-            " | {}",
-            (*self.distributed_cert).borrow().certificate.subject,
-        )?;
+        write!(f, " | {}", (*self.distributed_cert).borrow().certificate.subject,)?;
 
         if self.signees.len() > 0 {
             writeln!(f, "")?;
@@ -356,11 +294,7 @@ fn recreate_yaml_at_location_with_new_pem(
 
                 match &yaml_location.value {
                     LocationValueType::Pem(pem_location_info) => {
-                        let newbundle = pem_utils::pem_bundle_replace_pem_at_index(
-                            decoded,
-                            pem_location_info.pem_bundle_index,
-                            &new_pem,
-                        );
+                        let newbundle = pem_utils::pem_bundle_replace_pem_at_index(decoded, pem_location_info.pem_bundle_index, &new_pem);
                         let encoded = encode_resource_data_entry(&yaml_location, &newbundle);
                         *value_at_json_pointer = encoded;
                     }

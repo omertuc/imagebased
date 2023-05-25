@@ -16,28 +16,16 @@ pub(crate) struct DistributedJwt {
 }
 
 impl DistributedJwt {
-    pub(crate) fn regenerate(
-        &mut self,
-        original_signing_key: &PublicKey,
-        new_signing_key: &InMemorySigningKeyPair,
-    ) {
+    pub(crate) fn regenerate(&mut self, original_signing_key: &PublicKey, new_signing_key: &InMemorySigningKeyPair) {
         let new_key = match &self.signer {
             JwtSigner::Unknown => panic!("Cannot regenerate JWT with unknown signer"),
-            JwtSigner::CertKeyPair(_cert_key_pair) => {
-                self.resign(original_signing_key, new_signing_key)
-            }
-            JwtSigner::PrivateKey(_private_key) => {
-                self.resign(&original_signing_key, new_signing_key)
-            }
+            JwtSigner::CertKeyPair(_cert_key_pair) => self.resign(original_signing_key, new_signing_key),
+            JwtSigner::PrivateKey(_private_key) => self.resign(&original_signing_key, new_signing_key),
         };
         self.jwt.str = new_key;
     }
 
-    fn resign(
-        &self,
-        original_public_key: &PublicKey,
-        new_signing_key_pair: &InMemorySigningKeyPair,
-    ) -> String {
+    fn resign(&self, original_public_key: &PublicKey, new_signing_key_pair: &InMemorySigningKeyPair) -> String {
         match verify_jwt(&original_public_key, self) {
             Ok(claims) => match new_signing_key_pair {
                 InMemorySigningKeyPair::Ecdsa(_, _, _) => {
@@ -46,13 +34,11 @@ impl DistributedJwt {
                 InMemorySigningKeyPair::Ed25519(_) => {
                     panic!("Unsupported key type")
                 }
-                InMemorySigningKeyPair::Rsa(_rsa_key_pair, bytes) => {
-                    jwt_simple::prelude::RS256KeyPair::from_der(bytes)
-                        .unwrap()
-                        .sign(claims)
-                        .unwrap()
-                        .to_string()
-                }
+                InMemorySigningKeyPair::Rsa(_rsa_key_pair, bytes) => jwt_simple::prelude::RS256KeyPair::from_der(bytes)
+                    .unwrap()
+                    .sign(claims)
+                    .unwrap()
+                    .to_string(),
             },
             Err(_) => panic!("Failed to parse token"),
         }
@@ -71,15 +57,9 @@ impl DistributedJwt {
         }
     }
 
-    pub(crate) async fn commit_to_etcd(
-        &self,
-        etcd_client: &mut InMemoryK8sEtcd,
-        k8slocation: &K8sLocation,
-    ) {
+    pub(crate) async fn commit_to_etcd(&self, etcd_client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) {
         let mut resource = get_etcd_yaml(etcd_client, k8slocation).await;
-        if let Some(value_at_json_pointer) =
-            resource.pointer_mut(&k8slocation.yaml_location.json_pointer)
-        {
+        if let Some(value_at_json_pointer) = resource.pointer_mut(&k8slocation.yaml_location.json_pointer) {
             if let Value::String(value_at_json_pointer) = value_at_json_pointer {
                 match &k8slocation.yaml_location.value {
                     LocationValueType::Pem(_pem_location_info) => {
@@ -98,9 +78,7 @@ impl DistributedJwt {
         }
 
         let newcontents = serde_yaml::to_string(&resource).unwrap();
-        etcd_client
-            .put(&k8slocation.as_etcd_key(), newcontents.as_bytes().to_vec())
-            .await;
+        etcd_client.put(&k8slocation.as_etcd_key(), newcontents.as_bytes().to_vec()).await;
     }
 
     pub(crate) async fn commit_to_filesystem(&self, _filelocation: &FileLocation) {

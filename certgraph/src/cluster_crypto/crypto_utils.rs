@@ -10,4 +10,3 @@ pub(crate) fn generate_rsa_key(rng: &mut rand::prelude::ThreadRng) -> (RsaPrivat
     let key_pair = InMemorySigningKeyPair::from_pkcs8_der(&rsa_pkcs8_der_bytes).unwrap();
     (rsa_private_key, key_pair)
 }
-

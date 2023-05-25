@@ -63,12 +63,7 @@ impl InMemoryK8sEtcdInternal {
                 let etcd_client = Arc::clone(&self.etcd_client);
                 tokio::spawn(async move {
                     let auger_result = run_auger("encode", value.as_slice()).await;
-                    etcd_client
-                        .lock()
-                        .await
-                        .put(key.as_bytes(), auger_result, None)
-                        .await
-                        .unwrap()
+                    etcd_client.lock().await.put(key.as_bytes(), auger_result, None).await.unwrap()
                 })
             })
             .collect::<Vec<_>>();
@@ -95,25 +90,16 @@ impl InMemoryK8sEtcdInternal {
     }
 
     pub(crate) async fn put(&mut self, key: &str, value: Vec<u8>) {
-        self.etcd_keyvalue_hashmap
-            .lock()
-            .await
-            .insert(key.to_string(), value.clone());
+        self.etcd_keyvalue_hashmap.lock().await.insert(key.to_string(), value.clone());
     }
 
     pub(crate) async fn list_keys(&mut self, resource_kind: &str) -> Vec<String> {
-        let etcd_get_options = GetOptions::new()
-            .with_prefix()
-            .with_limit(0)
-            .with_keys_only();
+        let etcd_get_options = GetOptions::new().with_prefix().with_limit(0).with_keys_only();
         let keys = self
             .etcd_client
             .lock()
             .await
-            .get(
-                format!("/kubernetes.io/{}", resource_kind),
-                Some(etcd_get_options.clone()),
-            )
+            .get(format!("/kubernetes.io/{}", resource_kind), Some(etcd_get_options.clone()))
             .await
             .expect("Couldn't get secrets list, is etcd down?");
         keys.kvs()
@@ -141,21 +127,12 @@ async fn run_auger(auger_subcommand: &str, raw_etcd_value: &[u8]) -> Vec<u8> {
         .spawn()
         .unwrap();
 
-    command
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(raw_etcd_value)
-        .await
-        .unwrap();
+    command.stdin.take().unwrap().write_all(raw_etcd_value).await.unwrap();
 
     let result = command.wait_with_output().await.unwrap();
 
     if !result.status.success() {
-        panic!(
-            "auger failed on, error: {}",
-            String::from_utf8(result.stderr).unwrap().to_string()
-        );
+        panic!("auger failed on, error: {}", String::from_utf8(result.stderr).unwrap().to_string());
     };
 
     result.stdout

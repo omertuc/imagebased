@@ -30,29 +30,17 @@ struct Args {
     kubelet_dir: PathBuf,
 }
 
-async fn init() -> (
-    PathBuf,
-    PathBuf,
-    ClusterCryptoObjects,
-    Arc<Mutex<InMemoryK8sEtcd>>,
-) {
+async fn init() -> (PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
     let args = Args::parse();
 
-    let etcd_client = EtcdClient::connect([args.etcd_host.as_str()], None)
-        .await
-        .unwrap();
+    let etcd_client = EtcdClient::connect([args.etcd_host.as_str()], None).await.unwrap();
 
     let static_resource_dir = args.k8s_static_dir;
     let kubelet_dir = args.kubelet_dir;
     let cluster_crypto = ClusterCryptoObjects::new();
     let in_memory_etcd_client = Arc::new(Mutex::new(InMemoryK8sEtcd::new(etcd_client)));
 
-    (
-        kubelet_dir,
-        static_resource_dir,
-        cluster_crypto,
-        in_memory_etcd_client,
-    )
+    (kubelet_dir, static_resource_dir, cluster_crypto, in_memory_etcd_client)
 }
 
 #[tokio::main]
@@ -60,13 +48,7 @@ async fn main() -> Result<(), ()> {
     let (kubelet_dir, static_dir, mut cluster_crypto, memory_etcd) = init().await;
 
     // Collect and regenerate certs (doesn't write to disk/etcd)
-    recertify(
-        Arc::clone(&memory_etcd),
-        &mut cluster_crypto,
-        kubelet_dir,
-        static_dir,
-    )
-    .await;
+    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubelet_dir, static_dir).await;
 
     // Actually write to disk/etcd
     finalize(memory_etcd, &mut cluster_crypto).await;
@@ -86,44 +68,26 @@ async fn recertify(
     static_resource_dir: PathBuf,
     kubelet_dir: PathBuf,
 ) {
-    collect_crypto_objects(
-        cluster_crypto,
-        &in_memory_etcd_client,
-        kubelet_dir,
-        static_resource_dir,
-    )
-    .await;
+    collect_crypto_objects(cluster_crypto, &in_memory_etcd_client, kubelet_dir, static_resource_dir).await;
     establish_relationships(cluster_crypto).await;
     regenerate_cryptographic_objects(&cluster_crypto).await;
 }
 
-async fn finalize(
-    in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>,
-    cluster_crypto: &mut ClusterCryptoObjects,
-) {
+async fn finalize(in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>, cluster_crypto: &mut ClusterCryptoObjects) {
     // Commit the cryptographic objects back to memory etcd and to disk
     commit_cryptographic_objects_back(&in_memory_etcd_client, &cluster_crypto).await;
 
     // Since we're using an in-memory fake etcd, we need to also commit the changes to the real
     // etcd after we're done
     println!("Committing to etcd...");
-    in_memory_etcd_client
-        .lock()
-        .await
-        .commit_to_actual_etcd()
-        .await;
+    in_memory_etcd_client.lock().await.commit_to_actual_etcd().await;
 }
 
-async fn commit_cryptographic_objects_back(
-    in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>,
-    cluster_crypto: &ClusterCryptoObjects,
-) {
+async fn commit_cryptographic_objects_back(in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>, cluster_crypto: &ClusterCryptoObjects) {
     println!("Committing changes...");
     {
         let mut etcd_client = in_memory_etcd_client.lock().await;
-        cluster_crypto
-            .commit_to_etcd_and_disk(&mut etcd_client)
-            .await;
+        cluster_crypto.commit_to_etcd_and_disk(&mut etcd_client).await;
     }
 }
 
@@ -150,15 +114,9 @@ async fn collect_crypto_objects(
     static_resource_dir: PathBuf,
 ) {
     println!("Processing etcd...");
-    cluster_crypto
-        .process_etcd_resources(Arc::clone(in_memory_etcd_client))
-        .await;
+    cluster_crypto.process_etcd_resources(Arc::clone(in_memory_etcd_client)).await;
     println!("Reading kubelet_dir dir...");
-    cluster_crypto
-        .process_k8s_static_resources(&kubelet_dir)
-        .await;
+    cluster_crypto.process_k8s_static_resources(&kubelet_dir).await;
     println!("Reading kubernetes dir...");
-    cluster_crypto
-        .process_k8s_static_resources(&static_resource_dir)
-        .await;
+    cluster_crypto.process_k8s_static_resources(&static_resource_dir).await;
 }

@@ -40,12 +40,7 @@ pub(crate) enum Location {
 }
 
 impl Location {
-    pub fn k8s(
-        k8s_resource_location: K8sResourceLocation,
-        prefix: &str,
-        key: &str,
-        base64_encoded: bool,
-    ) -> Location {
+    pub fn k8s(k8s_resource_location: K8sResourceLocation, prefix: &str, key: &str, base64_encoded: bool) -> Location {
         Location::K8s(K8sLocation {
             resource_location: k8s_resource_location.clone(),
             yaml_location: YamlLocation {
@@ -71,16 +66,8 @@ impl Location {
 impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Location::K8s(k8s_location) => write!(
-                f,
-                "k8s:{}:{}",
-                k8s_location.resource_location, k8s_location.yaml_location
-            ),
-            Location::Filesystem(file_location) => write!(
-                f,
-                "file:{}:{}",
-                file_location.file_path, file_location.content_location
-            ),
+            Location::K8s(k8s_location) => write!(f, "k8s:{}:{}", k8s_location.resource_location, k8s_location.yaml_location),
+            Location::Filesystem(file_location) => write!(f, "file:{}:{}", file_location.file_path, file_location.content_location),
         }
     }
 }
@@ -99,8 +86,7 @@ impl Location {
         match self {
             Self::K8s(k8s_location) => {
                 let mut new_k8s_location = k8s_location.clone();
-                new_k8s_location.yaml_location.value =
-                    LocationValueType::Pem(PemLocationInfo { pem_bundle_index });
+                new_k8s_location.yaml_location.value = LocationValueType::Pem(PemLocationInfo { pem_bundle_index });
                 Self::K8s(new_k8s_location)
             }
             Self::Filesystem(file_location) => match &file_location.content_location {
@@ -109,19 +95,16 @@ impl Location {
                     LocationValueType::Jwt => panic!("Already has JWT info"),
                     LocationValueType::Unknown => {
                         let mut new_file_location = file_location.clone();
-                        new_file_location.content_location = FileContentLocation::Raw(
-                            LocationValueType::Pem(PemLocationInfo::new(pem_bundle_index)),
-                        );
+                        new_file_location.content_location =
+                            FileContentLocation::Raw(LocationValueType::Pem(PemLocationInfo::new(pem_bundle_index)));
                         Self::Filesystem(new_file_location)
                     }
                 },
                 FileContentLocation::Yaml(yaml_location) => {
                     let mut new_yaml_location = yaml_location.clone();
-                    new_yaml_location.value =
-                        LocationValueType::Pem(PemLocationInfo::new(pem_bundle_index));
+                    new_yaml_location.value = LocationValueType::Pem(PemLocationInfo::new(pem_bundle_index));
                     let mut new_file_location = file_location.clone();
-                    new_file_location.content_location =
-                        FileContentLocation::Yaml(new_yaml_location);
+                    new_file_location.content_location = FileContentLocation::Yaml(new_yaml_location);
                     Self::Filesystem(new_file_location)
                 }
             },
@@ -141,8 +124,7 @@ impl Location {
                     LocationValueType::Jwt => panic!("Already has JWT info"),
                     LocationValueType::Unknown => {
                         let mut new_file_location = file_location.clone();
-                        new_file_location.content_location =
-                            FileContentLocation::Raw(LocationValueType::Jwt);
+                        new_file_location.content_location = FileContentLocation::Raw(LocationValueType::Jwt);
                         Self::Filesystem(new_file_location)
                     }
                 },
@@ -150,8 +132,7 @@ impl Location {
                     let mut new_yaml_location = yaml_location.clone();
                     new_yaml_location.value = LocationValueType::Jwt;
                     let mut new_file_location = file_location.clone();
-                    new_file_location.content_location =
-                        FileContentLocation::Yaml(new_yaml_location);
+                    new_file_location.content_location = FileContentLocation::Yaml(new_yaml_location);
                     Self::Filesystem(new_file_location)
                 }
             },
