@@ -105,3 +105,9 @@ ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostK
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo ulimit -n 999999
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo bash -ic "'certgraph --etcd-endpoint localhost:2379 --k8s-static-dir /etc/kubernetes --kubelet-dir /var/lib/kubelet'"
 ```
+
+## Start kubelet and crio
+```bash
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl start kubelet
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl start crio
+```
