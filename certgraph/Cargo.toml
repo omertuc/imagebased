@@ -18,7 +18,7 @@ lazy_static = "1.4.0"
 rsa = "0.9.0"
 pkcs1 = "0.7.5"
 bytes = "1.4.0"
-etcd-client = "0.11"
+etcd-client = { version = "0.11", features = ["tls"] }
 tokio = { version = "1.0", features = ["full"] }
 ring = "0.16.20"
 bcder = "0.7.1"
@@ -29,3 +29,4 @@ hmac = "0.12.1"
 sha2 = "0.10.6"
 jwt-simple = "0.11.5"
 serde = "1.0.163"
+clap = { version = "4.3.0", features = ["derive"] }

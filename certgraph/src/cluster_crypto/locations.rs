@@ -39,6 +39,35 @@ pub(crate) enum Location {
     Filesystem(FileLocation),
 }
 
+impl Location {
+    pub fn k8s(
+        k8s_resource_location: K8sResourceLocation,
+        prefix: &str,
+        key: &str,
+        base64_encoded: bool,
+    ) -> Location {
+        Location::K8s(K8sLocation {
+            resource_location: k8s_resource_location.clone(),
+            yaml_location: YamlLocation {
+                json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
+                value: LocationValueType::Unknown,
+                base64_encoded,
+            },
+        })
+    }
+
+    pub fn file_yaml(file_path: &str, prefix: &str, key: &str, base64_encoded: bool) -> Location {
+        Location::Filesystem(FileLocation {
+            file_path: file_path.to_string(),
+            content_location: FileContentLocation::Yaml(YamlLocation {
+                json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
+                value: LocationValueType::Unknown,
+                base64_encoded,
+            }),
+        })
+    }
+}
+
 impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -86,6 +115,15 @@ impl Location {
                         Self::Filesystem(new_file_location)
                     }
                 },
+                FileContentLocation::Yaml(yaml_location) => {
+                    let mut new_yaml_location = yaml_location.clone();
+                    new_yaml_location.value =
+                        LocationValueType::Pem(PemLocationInfo::new(pem_bundle_index));
+                    let mut new_file_location = file_location.clone();
+                    new_file_location.content_location =
+                        FileContentLocation::Yaml(new_yaml_location);
+                    Self::Filesystem(new_file_location)
+                }
             },
         }
     }
@@ -108,6 +146,14 @@ impl Location {
                         Self::Filesystem(new_file_location)
                     }
                 },
+                FileContentLocation::Yaml(yaml_location) => {
+                    let mut new_yaml_location = yaml_location.clone();
+                    new_yaml_location.value = LocationValueType::Jwt;
+                    let mut new_file_location = file_location.clone();
+                    new_file_location.content_location =
+                        FileContentLocation::Yaml(new_yaml_location);
+                    Self::Filesystem(new_file_location)
+                }
             },
         }
     }
@@ -139,12 +185,14 @@ pub(crate) struct FileLocation {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum FileContentLocation {
     Raw(LocationValueType),
+    Yaml(YamlLocation),
 }
 
 impl std::fmt::Display for FileContentLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileContentLocation::Raw(pem_location_info) => write!(f, "{}", pem_location_info),
+            FileContentLocation::Yaml(yaml_location) => write!(f, "{}", yaml_location),
         }
     }
 }
@@ -170,6 +218,7 @@ impl std::fmt::Display for LocationValueType {
 pub(crate) struct YamlLocation {
     pub(crate) json_pointer: String,
     pub(crate) value: LocationValueType,
+    pub(crate) base64_encoded: bool,
 }
 
 impl std::fmt::Display for YamlLocation {

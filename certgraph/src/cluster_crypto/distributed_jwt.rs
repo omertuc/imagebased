@@ -86,7 +86,7 @@ impl DistributedJwt {
                         panic!("JWT cannot be in PEM")
                     }
                     LocationValueType::Jwt => {
-                        let encoded = encode_resource_data_entry(k8slocation, &self.jwt.str);
+                        let encoded = encode_resource_data_entry(&k8slocation.yaml_location, &self.jwt.str);
 
                         *value_at_json_pointer = encoded;
                     }

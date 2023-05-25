@@ -53,6 +53,7 @@ sudo mount /dev/nbd0p4 sno_disk
 # Run etcd
 RELEASE_IMAGE=quay.io/openshift-release-dev/ocp-release:4.12.2-x86_64
 ETCD_IMAGE="$(oc adm release extract --from="$RELEASE_IMAGE" --file=image-references | jq '.spec.tags[] | select(.name == "etcd").from.name' -r)"
+# sudo podman run --network=host --privileged -it --entrypoint etcd -v /var/lib/etcd:/store ${ETCD_IMAGE} --name editor --data-dir /store
 sudo podman run --network=host -it --authfile ~/repos/bootstrap-in-place-poc/registry-config.json --entrypoint etcd -v $PWD/sno_disk/ostree/deploy/rhcos/var/lib/etcd:/store ${ETCD_IMAGE} --name editor --data-dir /store
 
 # Find the kube dir and copy it

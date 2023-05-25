@@ -36,6 +36,7 @@ impl Display for DistributedPrivateKey {
 
         Ok(())
     }
+
 }
 
 impl DistributedPrivateKey {
@@ -48,6 +49,5 @@ impl DistributedPrivateKey {
         }
 
         self.key = PrivateKey::Rsa(self_new_rsa_private_key);
-
     }
 }

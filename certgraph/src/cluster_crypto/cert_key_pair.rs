@@ -2,8 +2,9 @@ use super::{
     crypto_utils::generate_rsa_key,
     decode_resource_data_entry,
     distributed_public_key::DistributedPublicKey,
+    get_filesystem_yaml,
     locations::{FileContentLocation, FileLocation, K8sLocation, Location},
-    pem_bundle_replace_pem_at_index,
+    read_file_to_string, pem_utils,
 };
 use super::{
     distributed_private_key, encode_resource_data_entry, encode_tbs_cert_to_der, get_etcd_yaml,
@@ -137,41 +138,26 @@ impl CertKeyPair {
         etcd_client: &mut InMemoryK8sEtcd,
         k8slocation: &K8sLocation,
     ) {
-        let mut resource = get_etcd_yaml(etcd_client, k8slocation).await;
-        if let Some(value_at_json_pointer) =
-            resource.pointer_mut(&k8slocation.yaml_location.json_pointer)
-        {
-            if let Value::String(value_at_json_pointer) = value_at_json_pointer {
-                let decoded = decode_resource_data_entry(k8slocation, &value_at_json_pointer);
+        let resource = get_etcd_yaml(etcd_client, k8slocation).await;
 
-                if let LocationValueType::Pem(pem_location_info) = &k8slocation.yaml_location.value
-                {
-                    let newpem = pem::parse(
+        etcd_client
+            .put(
+                &k8slocation.as_etcd_key(),
+                recreate_yaml_at_location_with_new_pem(
+                    resource,
+                    &k8slocation.yaml_location,
+                    &pem::parse(
                         (*self.distributed_cert)
                             .borrow()
                             .certificate
                             .original
                             .encode_pem(),
                     )
-                    .unwrap();
-                    let newbundle = pem_bundle_replace_pem_at_index(
-                        decoded,
-                        pem_location_info.pem_bundle_index,
-                        newpem,
-                    );
-                    let encoded = encode_resource_data_entry(k8slocation, &newbundle);
-                    *value_at_json_pointer = encoded;
-                } else {
-                    panic!("shouldn't happen");
-                }
-            }
-        } else {
-            panic!("shouldn't happen");
-        }
-
-        let newcontents = serde_yaml::to_string(&resource).unwrap();
-        etcd_client
-            .put(&k8slocation.as_etcd_key(), newcontents.as_bytes().to_vec())
+                    .unwrap(),
+                )
+                .as_bytes()
+                .to_vec(),
+            )
             .await;
     }
 
@@ -205,40 +191,19 @@ impl CertKeyPair {
         k8slocation: &K8sLocation,
         distributed_private_key: &distributed_private_key::DistributedPrivateKey,
     ) {
-        let mut resource = get_etcd_yaml(etcd_client, k8slocation).await;
-        if let Some(value_at_json_pointer) =
-            resource.pointer_mut(&k8slocation.yaml_location.json_pointer)
-        {
-            if let Value::String(value_at_json_pointer) = value_at_json_pointer {
-                let decoded = decode_resource_data_entry(k8slocation, &value_at_json_pointer);
+        let resource = get_etcd_yaml(etcd_client, k8slocation).await;
 
-                if let LocationValueType::Pem(pem_location_info) = &k8slocation.yaml_location.value
-                {
-                    match &distributed_private_key.key {
-                        PrivateKey::Rsa(rsa_private_key) => {
-                            let newbundle = pem_bundle_replace_pem_at_index(
-                                decoded,
-                                pem_location_info.pem_bundle_index,
-                                pem::Pem::new(
-                                    "RSA PRIVATE KEY",
-                                    rsa_private_key.to_pkcs1_der().unwrap().as_bytes(),
-                                ),
-                            );
-                            let encoded = encode_resource_data_entry(k8slocation, &newbundle);
-                            *value_at_json_pointer = encoded;
-                        }
-                    }
-                } else {
-                    panic!("shouldn't happen");
-                }
-            }
-        } else {
-            panic!("shouldn't happen");
-        }
-
-        let newcontents = serde_yaml::to_string(&resource).unwrap();
         etcd_client
-            .put(&k8slocation.as_etcd_key(), newcontents.as_bytes().to_vec())
+            .put(
+                &k8slocation.as_etcd_key(),
+                recreate_yaml_at_location_with_new_pem(
+                    resource,
+                    &k8slocation.yaml_location,
+                    &distributed_private_key.key.pem(),
+                )
+                .as_bytes()
+                .to_vec(),
+            )
             .await;
     }
 
@@ -247,34 +212,44 @@ impl CertKeyPair {
         filelocation: &FileLocation,
         private_key: &distributed_private_key::DistributedPrivateKey,
     ) {
-        let mut file = tokio::fs::File::open(&filelocation.file_path)
-            .await
-            .unwrap();
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).await.unwrap();
+        let private_key_pem = match &private_key.key {
+            PrivateKey::Rsa(rsa_private_key) => pem::Pem::new(
+                "RSA PRIVATE KEY",
+                rsa_private_key.to_pkcs1_der().unwrap().as_bytes(),
+            ),
+        };
 
-        match &filelocation.content_location {
-            FileContentLocation::Raw(pem_location_info) => match &private_key.key {
-                PrivateKey::Rsa(rsa_private_key) => {
-                    if let LocationValueType::Pem(pem_location_info) = &pem_location_info {
-                        let newpem = pem::Pem::new(
-                            "RSA PRIVATE KEY",
-                            rsa_private_key.to_pkcs1_der().unwrap().as_bytes(),
-                        );
-                        let newbundle = pem_bundle_replace_pem_at_index(
-                            String::from_utf8(contents).unwrap(),
+        tokio::fs::write(
+            &filelocation.file_path,
+            match &filelocation.content_location {
+                FileContentLocation::Raw(pem_location_info) => match &pem_location_info {
+                    LocationValueType::Pem(pem_location_info) => {
+                        pem_utils::pem_bundle_replace_pem_at_index(
+                            String::from_utf8(
+                                (read_file_to_string(filelocation.file_path.clone().into()).await)
+                                    .into_bytes(),
+                            )
+                            .unwrap(),
                             pem_location_info.pem_bundle_index,
-                            newpem,
-                        );
-                        tokio::fs::write(&filelocation.file_path, newbundle)
-                            .await
-                            .unwrap();
-                    } else {
+                            &private_key_pem,
+                        )
+                    }
+                    _ => {
                         panic!("shouldn't happen");
                     }
+                },
+                FileContentLocation::Yaml(yaml_location) => {
+                    let resource = get_filesystem_yaml(filelocation).await;
+                    recreate_yaml_at_location_with_new_pem(
+                        resource,
+                        yaml_location,
+                        &private_key_pem,
+                    )
                 }
             },
-        }
+        )
+        .await
+        .unwrap();
     }
 
     pub(crate) async fn commit_filesystem_cert(&self, filelocation: &FileLocation) {
@@ -284,30 +259,37 @@ impl CertKeyPair {
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).await.unwrap();
 
-        match &filelocation.content_location {
-            FileContentLocation::Raw(location_value_type) => {
-                if let LocationValueType::Pem(pem_location_info) = &location_value_type {
-                    let newpem = pem::parse(
-                        (*self.distributed_cert)
-                            .borrow()
-                            .certificate
-                            .original
-                            .encode_pem(),
-                    )
-                    .unwrap();
-                    let newbundle = pem_bundle_replace_pem_at_index(
-                        String::from_utf8(contents).unwrap(),
-                        pem_location_info.pem_bundle_index,
-                        newpem,
-                    );
-                    tokio::fs::write(&filelocation.file_path, newbundle)
-                        .await
-                        .unwrap();
-                } else {
-                    panic!("shouldn't happen");
+        let newpem = pem::parse(
+            (*self.distributed_cert)
+                .borrow()
+                .certificate
+                .original
+                .encode_pem(),
+        )
+        .unwrap();
+
+        tokio::fs::write(
+            &filelocation.file_path,
+            match &filelocation.content_location {
+                FileContentLocation::Raw(location_value_type) => {
+                    if let LocationValueType::Pem(pem_location_info) = &location_value_type {
+                        pem_utils::pem_bundle_replace_pem_at_index(
+                            String::from_utf8(contents).unwrap(),
+                            pem_location_info.pem_bundle_index,
+                            &newpem,
+                        )
+                    } else {
+                        panic!("shouldn't happen");
+                    }
                 }
-            }
-        }
+                FileContentLocation::Yaml(yaml_location) => {
+                    let resource = get_filesystem_yaml(filelocation).await;
+                    recreate_yaml_at_location_with_new_pem(resource, yaml_location, &newpem)
+                }
+            },
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -360,4 +342,38 @@ impl Display for CertKeyPair {
 
         Ok(())
     }
+}
+
+fn recreate_yaml_at_location_with_new_pem(
+    mut resource: Value,
+    yaml_location: &super::locations::YamlLocation,
+    new_pem: &pem::Pem,
+) -> String {
+    match resource.pointer_mut(&yaml_location.json_pointer) {
+        Some(value_at_json_pointer) => {
+            if let Value::String(value_at_json_pointer) = value_at_json_pointer {
+                let decoded = decode_resource_data_entry(yaml_location, value_at_json_pointer);
+
+                match &yaml_location.value {
+                    LocationValueType::Pem(pem_location_info) => {
+                        let newbundle = pem_utils::pem_bundle_replace_pem_at_index(
+                            decoded,
+                            pem_location_info.pem_bundle_index,
+                            &new_pem,
+                        );
+                        let encoded = encode_resource_data_entry(&yaml_location, &newbundle);
+                        *value_at_json_pointer = encoded;
+                    }
+                    _ => {
+                        panic!("shouldn't happen");
+                    }
+                }
+            }
+        }
+        None => {
+            panic!("shouldn't happen");
+        }
+    }
+    let newcontents = serde_yaml::to_string(&resource).unwrap();
+    newcontents
 }

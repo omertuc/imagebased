@@ -16,16 +16,14 @@ use locations::{
     FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location,
     LocationValueType, YamlLocation,
 };
-use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPublicKey};
+use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::RsaPrivateKey;
 use serde_json::{Map, Value};
 use std::{
     cell::RefCell,
     collections::HashMap,
     fmt::{Display, Formatter},
-    fs,
     hash::{Hash, Hasher},
-    io::Read,
     path::PathBuf,
     rc::Rc,
     sync::Arc,
@@ -34,7 +32,7 @@ use std::{
     collections::hash_map::Entry::{Occupied, Vacant},
     path::Path,
 };
-use tokio::sync::Mutex;
+use tokio::{io::AsyncReadExt, sync::Mutex};
 use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair};
 
 use self::{
@@ -48,6 +46,7 @@ pub(crate) mod distributed_jwt;
 pub(crate) mod distributed_private_key;
 pub(crate) mod distributed_public_key;
 pub(crate) mod locations;
+pub(crate) mod pem_utils;
 
 /// This is the main struct that holds all the crypto objects we've found in the cluster and the
 /// locations where we found them, and how they relate to each other.
@@ -85,6 +84,17 @@ impl std::fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rsa(_) => write!(f, "<rsa_priv>"),
+        }
+    }
+}
+
+impl PrivateKey {
+    fn pem(&self) -> pem::Pem {
+        match &self {
+            PrivateKey::Rsa(rsa_private_key) => pem::Pem::new(
+                "RSA PRIVATE KEY",
+                rsa_private_key.to_pkcs1_der().unwrap().as_bytes(),
+            ),
         }
     }
 }
@@ -232,14 +242,14 @@ impl Signee {
             Self::CertKeyPair(cert_key_pair) => {
                 (**cert_key_pair).borrow_mut().regenerate(new_signing_key);
             }
-            Self::Jwt(jwt) => {
-                match new_signing_key {
-                    Some(key_pair) => (**jwt).borrow_mut().regenerate(&original_signing_public_key, key_pair),
-                    None => panic!(
-                    "Cannot regenerate a jwt without a signing key, regenerate may only be called on a signee that is a root cert-key-pair"
-                ),
+            Self::Jwt(jwt) => match new_signing_key {
+                Some(key_pair) => (**jwt)
+                    .borrow_mut()
+                    .regenerate(&original_signing_public_key, key_pair),
+                None => {
+                    panic!("Cannot regenerate a jwt without a signing key, regenerate may only be called on a signee that is a root cert-key-pair")
                 }
-            }
+            },
         }
     }
 }
@@ -253,8 +263,8 @@ fn encode_tbs_cert_to_der(tbs_certificate: &rfc5280::TbsCertificate) -> Vec<u8> 
     tbs_der
 }
 
-fn encode_resource_data_entry(k8slocation: &K8sLocation, value: &String) -> String {
-    if k8slocation.resource_location.kind == "Secret" {
+fn encode_resource_data_entry(k8slocation: &YamlLocation, value: &String) -> String {
+    if k8slocation.base64_encoded {
         STANDARD.encode(value.as_bytes())
     } else {
         value.to_string()
@@ -262,10 +272,10 @@ fn encode_resource_data_entry(k8slocation: &K8sLocation, value: &String) -> Stri
 }
 
 fn decode_resource_data_entry(
-    k8slocation: &K8sLocation,
-    value_at_json_pointer: &&mut String,
+    yaml_location: &YamlLocation,
+    value_at_json_pointer: &mut String,
 ) -> String {
-    let decoded = if k8slocation.resource_location.kind == "Secret" {
+    let decoded = if yaml_location.base64_encoded {
         String::from_utf8_lossy(
             STANDARD
                 .decode(value_at_json_pointer.as_bytes())
@@ -289,27 +299,13 @@ async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) 
     .unwrap()
 }
 
-fn pem_bundle_replace_pem_at_index(
-    original_pem_bundle: String,
-    pem_index: u64,
-    newpem: pem::Pem,
-) -> String {
-    let pems = pem::parse_many(original_pem_bundle.clone()).unwrap();
-    let mut newpems = vec![];
-    for (i, pem) in pems.iter().enumerate() {
-        if i == usize::try_from(pem_index).unwrap() {
-            newpems.push(newpem.clone());
-        } else {
-            newpems.push(pem.clone());
-        }
-    }
-    let newbundle = pem::encode_many_config(
-        &newpems,
-        pem::EncodeConfig {
-            line_ending: pem::LineEnding::LF,
-        },
-    );
-    newbundle
+async fn get_filesystem_yaml(file_location: &FileLocation) -> Value {
+    serde_yaml::from_str(
+        read_file_to_string(file_location.file_path.clone().into())
+            .await
+            .as_str(),
+    )
+    .expect("failed to parse yaml")
 }
 
 pub(crate) struct ClusterCryptoObjects {
@@ -351,7 +347,8 @@ impl ClusterCryptoObjects {
         self.internal
             .lock()
             .await
-            .process_k8s_static_resources(k8s_dir);
+            .process_k8s_static_resources(k8s_dir)
+            .await;
     }
     pub(crate) async fn process_etcd_resources(
         &mut self,
@@ -592,9 +589,9 @@ impl ClusterCryptoObjectsInternal {
                 );
 
                 panic!(
-                "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
-                (**distributed_cert).borrow().certificate.subject
-            );
+                    "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
+                    (**distributed_cert).borrow().certificate.subject
+                );
             }
 
             self.cert_key_pairs.push(pair);
@@ -632,12 +629,12 @@ impl ClusterCryptoObjectsInternal {
         let location = K8sResourceLocation::from(value);
         match location.kind.as_str() {
             "Secret" => self.scan_k8s_secret(value, &location),
-            "ConfigMap" => self.scan_configmap(value, &location),
-            _ => (),
+            "ConfigMap" => self.scan_k8s_configmap(value, &location),
+            _ => {}
         }
     }
 
-    fn scan_configmap(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+    fn scan_k8s_configmap(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
         if let Some(data) = value.as_object().unwrap().get("data") {
             match data {
                 Value::Object(data) => {
@@ -646,16 +643,16 @@ impl ClusterCryptoObjectsInternal {
                             continue;
                         }
                         if let Value::String(value) = value {
-                            self.process_pem_bundle(
-                                value,
-                                &Location::K8s(K8sLocation {
-                                    resource_location: k8s_resource_location.clone(),
-                                    yaml_location: YamlLocation {
-                                        json_pointer: format!("/data/{key}"),
-                                        value: LocationValueType::Unknown,
-                                    },
-                                }),
-                            );
+                            let location = &Location::K8s(K8sLocation {
+                                resource_location: k8s_resource_location.clone(),
+                                yaml_location: YamlLocation {
+                                    json_pointer: format!("/data/{key}"),
+                                    value: LocationValueType::Unknown,
+                                    base64_encoded: false,
+                                },
+                            });
+
+                            self.process_unknown_yaml_value(value.to_string(), location);
                         }
                     }
                 }
@@ -673,12 +670,9 @@ impl ClusterCryptoObjectsInternal {
                             continue;
                         }
 
-                        self.process_k8s_secret_data_entry(
-                            key,
+                        self.process_base64_value(
                             value,
-                            k8s_resource_location,
-                            true,
-                            format!("/data/{}", key.to_string().replace("/", "~1")).as_str(),
+                            &Location::k8s(k8s_resource_location.clone(), "/data", key, true),
                         );
                     }
                 }
@@ -693,20 +687,14 @@ impl ClusterCryptoObjectsInternal {
                         match annotations {
                             Value::Object(annotations) => {
                                 for (key, value) in annotations.iter() {
-                                    if rules::IGNORE_LIST_SECRET.contains(key) {
-                                        continue;
-                                    }
-
-                                    self.process_k8s_secret_data_entry(
-                                        key,
-                                        value,
-                                        k8s_resource_location,
-                                        false,
-                                        format!(
-                                            "/metadata/annotations/{}",
-                                            key.to_string().replace("/", "~1")
-                                        )
-                                        .as_str(),
+                                    self.process_unknown_yaml_value(
+                                        value.to_string(),
+                                        &Location::k8s(
+                                            k8s_resource_location.clone(),
+                                            "/metadata/annotations",
+                                            key,
+                                            false,
+                                        ),
                                     );
                                 }
                             }
@@ -719,42 +707,26 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    fn process_k8s_secret_data_entry(
-        &mut self,
-        key: &str,
-        value: &Value,
-        k8s_resource_location: &K8sResourceLocation,
-        base64_decode: bool,
-        path: &str,
-    ) {
+    fn process_base64_value(&mut self, value: &Value, location: &Location) {
         if let Value::String(string_value) = value {
-            let value = if base64_decode {
-                if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
-                    String::from_utf8(value).unwrap_or_else(|_| {
-                        panic!("Failed to decode base64 {}", key);
-                    })
-                } else {
-                    panic!("Failed to decode base64 {}", key);
-                }
+            if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
+                String::from_utf8(value).unwrap_or_else(|_| {
+                    panic!("Failed to decode base64");
+                });
             } else {
-                string_value.clone()
-            };
-
-            let location = &Location::K8s(K8sLocation {
-                resource_location: k8s_resource_location.clone(),
-                yaml_location: YamlLocation {
-                    json_pointer: path.to_string(),
-                    value: LocationValueType::Unknown,
-                },
-            });
-
-            if let Some(_) = self.process_pem_bundle(&value, location) {
-                return;
-            };
-
-            if let Some(_) = self.process_jwt(&value, location) {
-                return;
+                panic!("Failed to decode base64");
             }
+            self.process_unknown_yaml_value(value.to_string(), location);
+        }
+    }
+
+    fn process_unknown_yaml_value(&mut self, value: String, location: &Location) {
+        if let Some(_) = self.process_pem_bundle(&value, location) {
+            return;
+        };
+
+        if let Some(_) = self.process_jwt(&value, location) {
+            return;
         }
     }
 
@@ -938,26 +910,35 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
-        self.process_static_resource_pems(k8s_dir);
+    async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
+        self.process_static_resource_raw_pems(k8s_dir).await;
+        self.process_static_resource_yamls(k8s_dir).await;
     }
 
-    fn process_static_resource_pems(&mut self, k8s_dir: &Path) {
-        file_utils::globvec(k8s_dir, "**/*.pem")
+    async fn process_static_resource_raw_pems(&mut self, k8s_dir: &Path) {
+        for raw_pem_path in file_utils::globvec(k8s_dir, "**/*.pem")
             .into_iter()
             .chain(file_utils::globvec(k8s_dir, "**/*.crt").into_iter())
             .chain(file_utils::globvec(k8s_dir, "**/*.key").into_iter())
             .chain(file_utils::globvec(k8s_dir, "**/*.pub").into_iter())
-            .for_each(|pem_path| {
-                self.process_static_resource_pem(&pem_path);
-            });
+        {
+            self.process_static_resource_raw_pem(
+                read_file_to_string(raw_pem_path.clone()).await,
+                &raw_pem_path,
+            );
+        }
     }
 
-    fn process_static_resource_pem(&mut self, pem_file_path: &PathBuf) {
-        let mut file = fs::File::open(pem_file_path).expect("failed to open file");
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .expect("failed to read file");
+    async fn process_static_resource_yamls(&mut self, k8s_dir: &Path) {
+        for yaml_path in file_utils::globvec(k8s_dir, "**/kubeconfig*").into_iter() {
+            self.process_static_resource_yaml(
+                read_file_to_string(yaml_path.clone()).await,
+                &yaml_path,
+            );
+        }
+    }
+
+    fn process_static_resource_raw_pem(&mut self, contents: String, pem_file_path: &PathBuf) {
         self.process_pem_bundle(
             &contents,
             &Location::Filesystem(FileLocation {
@@ -1022,6 +1003,65 @@ impl ClusterCryptoObjectsInternal {
             }
         }
     }
+
+    fn process_static_resource_yaml(&mut self, contents: String, yaml_path: &PathBuf) {
+        let value: &Value = &serde_yaml::from_str(contents.as_str()).expect("failed to parse yaml");
+
+        // Go through all kubeconfig users
+        for (i, user) in value["users"].as_array().unwrap().into_iter().enumerate() {
+            for user_field in ["client-certificate", "client-key"].iter() {
+                self.process_pem_bundle(
+                    user.as_object().unwrap()["user"]
+                        .as_object()
+                        .unwrap()
+                        .get(user_field.to_string().as_str())
+                        .unwrap()
+                        .as_str()
+                        .unwrap(),
+                    &Location::file_yaml(
+                        yaml_path.to_string_lossy().to_string().as_str(),
+                        &format!("/users/user/{}", i),
+                        user_field,
+                        true,
+                    ),
+                );
+            }
+        }
+
+        for (i, cluster) in value["clusters"]
+            .as_array()
+            .unwrap()
+            .into_iter()
+            .enumerate()
+        {
+            self.process_pem_bundle(
+                cluster.as_object().unwrap()["cluster"]
+                    .as_object()
+                    .unwrap()
+                    .get("certificate-authority-data")
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                &Location::file_yaml(
+                    yaml_path.to_string_lossy().to_string().as_str(),
+                    &format!("/clusters/cluster/{}", i),
+                    "certificate-authority-data",
+                    true,
+                ),
+            );
+        }
+    }
+}
+
+async fn read_file_to_string(file_path: PathBuf) -> String {
+    let mut file = tokio::fs::File::open(file_path)
+        .await
+        .expect("failed to open file");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .await
+        .expect("failed to read file");
+    contents
 }
 
 fn verify_jwt(
