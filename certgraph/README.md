@@ -59,3 +59,49 @@ sudo podman run --network=host -it --authfile ~/repos/bootstrap-in-place-poc/reg
 # Find the kube dir and copy it
 cp /home/omer/Documents/model6/sno_disk/ostree/deploy/rhcos/deploy/dd62c369ad76ef06c72ef2d76da6578eeafe4022ef082b0dfe8171e4572a15e4.0/etc/kubernetes -r /home/omer/repos/imagebased/certgraph/
 ```
+
+# Run on cluster
+
+## Compile
+```bash
+RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-gnu
+```
+
+## Reboot
+
+```bash
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo reboot 
+
+while true; do
+    ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl stop kubelet
+    ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl stop crio
+done
+```
+
+## Run etcd
+
+```bash
+RELEASE_IMAGE=quay.io/openshift-release-dev/ocp-release:4.13.0-x86_64
+ETCD_IMAGE="$(oc adm release extract --from="$RELEASE_IMAGE" --file=image-references | jq '.spec.tags[] | select(.name == "etcd").from.name' -r)"
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo podman run --network=host --privileged --entrypoint etcd -v /var/lib/etcd:/store ${ETCD_IMAGE} --name editor --data-dir /store
+```
+
+## Copy
+
+```bash
+cd /home/omer/repos/bootstrap-in-place-poc
+
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo mkdir -p /root/.local/bin
+scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/imagebased/certgraph/target/x86_64-unknown-linux-gnu/release/certgraph core@192.168.126.10:certgraph
+scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/auger/auger core@192.168.126.10:
+
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/auger /root/.local/bin/
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/certgraph /root/.local/bin/
+```
+
+## Run utility
+
+```bash
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo ulimit -n 999999
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo bash -ic "'certgraph --etcd-endpoint localhost:2379 --k8s-static-dir /etc/kubernetes --kubelet-dir /var/lib/kubelet'"
+```
