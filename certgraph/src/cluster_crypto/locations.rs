@@ -61,6 +61,10 @@ impl Location {
             }),
         })
     }
+
+    pub fn is_filesystem(&self) -> bool {
+        matches!(self, Location::Filesystem(_))
+    }
 }
 
 impl std::fmt::Display for Location {

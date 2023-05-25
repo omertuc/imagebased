@@ -484,22 +484,29 @@ impl ClusterCryptoObjectsInternal {
                 }
             } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&(**distributed_cert).borrow().certificate.subject) {
                 println!("Known no private key for {}", (**distributed_cert).borrow().certificate.subject);
-            } else {
-                // for (public_key, _private_key) in &self.public_to_private {
-                //     if let PublicKey::Rsa(public_key) = public_key {
-                //         println!("- {:#?}", public_key);
-                //     }
-                // }
-
+            } else if (**distributed_cert).borrow().locations.0.iter().all(|location| match location {
+                Location::Filesystem(file_location) => {
+                    if file_location.file_path.contains("kubernetes.io~configmap") {
+                        // Some certs only appear in zombie pods leftover in kubelet's
+                        // /var/lib/kubelet/pods directory. If a cert is only found in zombie pods
+                        // then it's not a problem that we're missing the private key for it, we
+                        // shouldn't panic about it, it's not a problem with the tool.
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }) {
                 println!(
-                    "{}, {:#?}",
-                    (**distributed_cert).borrow().locations,
-                    (**distributed_cert).borrow().certificate.public_key.clone()
-                );
-
-                panic!(
-                    "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
+                    "Known no private key found for {} (zombie pod in kubelet filesystem)",
                     (**distributed_cert).borrow().certificate.subject
+                );
+            } else {
+                panic!(
+                    "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}. The cert was found in {}",
+                    (**distributed_cert).borrow().certificate.subject,
+                    (**distributed_cert).borrow().locations,
                 );
             }
 
