@@ -31,21 +31,20 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), ()> {
-    let (kubelet_dir, static_dir, mut cluster_crypto, memory_etcd) = init().await;
-
-    // Collect and regenerate certs (doesn't write to disk/etcd)
-    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubelet_dir, static_dir).await;
-
-    // Actually write to disk/etcd
-    finalize(memory_etcd, &mut cluster_crypto).await;
-
-    print_summary(cluster_crypto).await
-}
-
-async fn init() -> (PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
+async fn main() {
     let args = Args::parse();
 
+    main_internal(args).await;
+}
+
+async fn main_internal(args: Args) {
+    let (kubelet_dir, static_dir, mut cluster_crypto, memory_etcd) = init(args).await;
+    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubelet_dir, static_dir).await;
+    finalize(memory_etcd, &mut cluster_crypto).await;
+    print_summary(cluster_crypto).await;
+}
+
+async fn init(args: Args) -> (PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
     let etcd_client = EtcdClient::connect([args.etcd_endpoint.as_str()], None).await.unwrap();
 
     let static_resource_dir = args.k8s_static_dir;
@@ -77,10 +76,9 @@ async fn finalize(in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>, cluster_cr
     in_memory_etcd_client.lock().await.commit_to_actual_etcd().await;
 }
 
-async fn print_summary(cluster_crypto: ClusterCryptoObjects) -> Result<(), ()> {
+async fn print_summary(cluster_crypto: ClusterCryptoObjects) {
     println!("Crypto graph...");
     cluster_crypto.display().await;
-    Ok(())
 }
 
 async fn commit_cryptographic_objects_back(in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>, cluster_crypto: &ClusterCryptoObjects) {
@@ -115,8 +113,24 @@ async fn collect_crypto_objects(
 ) {
     println!("Processing etcd...");
     cluster_crypto.process_etcd_resources(Arc::clone(in_memory_etcd_client)).await;
-    println!("Reading kubelet_dir dir...");
+    println!("Reading kubelet dir...");
     cluster_crypto.process_k8s_static_resources(&kubelet_dir).await;
     println!("Reading kubernetes dir...");
     cluster_crypto.process_k8s_static_resources(&static_resource_dir).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_init() {
+        let args = super::Args {
+            etcd_endpoint: "http://localhost:2379".to_string(),
+            k8s_static_dir: "./kubernetes".into(),
+            kubelet_dir: "./kubelet".into(),
+        };
+
+        main_internal(args).await;
+    }
 }

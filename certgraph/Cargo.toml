@@ -30,3 +30,4 @@ sha2 = "0.10.6"
 jwt-simple = "0.11.5"
 serde = "1.0.163"
 clap = { version = "4.3.0", features = ["derive"] }
+tokio-test = "0.4.2"

@@ -38,7 +38,7 @@ SNO cluster
 
 ```bash
 # Mount the disk 
-cd /home/omer/Documents/model4
+cd /home/omer/Documents/model6
 sudo modprobe nbd
 sudo qemu-nbd --connect=/dev/nbd0 model.qcow2
 mkdir -p sno_disk
@@ -48,14 +48,14 @@ sudo mount /dev/nbd0p4 sno_disk
 # sudo qemu-nbd --disconnect /dev/nbd0 
 # sudo umount sno_disk
 # sudo rm -rf model.qcow2 sno_disk
-# sudo cp ../model/model.qcow2 .
+# sudo cp ../model5/model.qcow2 .
 
 # Run etcd
-RELEASE_IMAGE=quay.io/openshift-release-dev/ocp-release:4.12.2-x86_64
+RELEASE_IMAGE=quay.io/openshift-release-dev/ocp-release:4.13.0-x86_64
 ETCD_IMAGE="$(oc adm release extract --from="$RELEASE_IMAGE" --file=image-references | jq '.spec.tags[] | select(.name == "etcd").from.name' -r)"
 # sudo podman run --network=host --privileged -it --entrypoint etcd -v /var/lib/etcd:/store ${ETCD_IMAGE} --name editor --data-dir /store
 sudo podman run --network=host -it --authfile ~/repos/bootstrap-in-place-poc/registry-config.json --entrypoint etcd -v $PWD/sno_disk/ostree/deploy/rhcos/var/lib/etcd:/store ${ETCD_IMAGE} --name editor --data-dir /store
 
 # Find the kube dir and copy it
-cp /home/omer/Documents/model4/sno_disk/ostree/deploy/rhcos/deploy/dd62c369ad76ef06c72ef2d76da6578eeafe4022ef082b0dfe8171e4572a15e4.0/etc/kubernetes -r /home/omer/repos/imagebased/certgraph/
+cp /home/omer/Documents/model6/sno_disk/ostree/deploy/rhcos/deploy/dd62c369ad76ef06c72ef2d76da6578eeafe4022ef082b0dfe8171e4572a15e4.0/etc/kubernetes -r /home/omer/repos/imagebased/certgraph/
 ```

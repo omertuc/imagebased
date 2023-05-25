@@ -485,13 +485,17 @@ impl ClusterCryptoObjectsInternal {
             } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&(**distributed_cert).borrow().certificate.subject) {
                 println!("Known no private key for {}", (**distributed_cert).borrow().certificate.subject);
             } else {
-                for (public_key, _private_key) in &self.public_to_private {
-                    if let PublicKey::Rsa(public_key) = public_key {
-                        println!("- {:#?}", public_key);
-                    }
-                }
+                // for (public_key, _private_key) in &self.public_to_private {
+                //     if let PublicKey::Rsa(public_key) = public_key {
+                //         println!("- {:#?}", public_key);
+                //     }
+                // }
 
-                println!("{:#?}", (**distributed_cert).borrow().certificate.public_key.clone());
+                println!(
+                    "{}, {:#?}",
+                    (**distributed_cert).borrow().locations,
+                    (**distributed_cert).borrow().certificate.public_key.clone()
+                );
 
                 panic!(
                     "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}",
@@ -563,6 +567,10 @@ impl ClusterCryptoObjectsInternal {
     }
 
     fn scan_k8s_secret(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+        if k8s_resource_location.name == "node-system-admin-signer" {
+            println!("Found node-system-admin-signer");
+        }
+
         if let Some(data) = value.as_object().unwrap().get("data") {
             match data {
                 Value::Object(data) => {
@@ -603,13 +611,15 @@ impl ClusterCryptoObjectsInternal {
     fn process_base64_value(&mut self, value: &Value, location: &Location) {
         if let Value::String(string_value) = value {
             if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
-                String::from_utf8(value).unwrap_or_else(|_| {
-                    panic!("Failed to decode base64");
-                });
+                self.process_unknown_yaml_value(
+                    String::from_utf8(value).unwrap_or_else(|_| {
+                        panic!("Failed to decode base64");
+                    }),
+                    location,
+                );
             } else {
                 panic!("Failed to decode base64");
             }
-            self.process_unknown_yaml_value(value.to_string(), location);
         }
     }
 
@@ -800,7 +810,12 @@ impl ClusterCryptoObjectsInternal {
 
     async fn process_static_resource_yamls(&mut self, k8s_dir: &Path) {
         for yaml_path in file_utils::globvec(k8s_dir, "**/kubeconfig*").into_iter() {
-            self.process_static_resource_yaml(read_file_to_string(yaml_path.clone()).await, &yaml_path);
+            if self
+                .process_static_resource_yaml(read_file_to_string(yaml_path.clone()).await, &yaml_path)
+                .is_none()
+            {
+                println!("Failed to process {}", yaml_path.to_string_lossy());
+            }
         }
     }
 
@@ -868,39 +883,44 @@ impl ClusterCryptoObjectsInternal {
     }
 
     fn process_static_resource_yaml(&mut self, contents: String, yaml_path: &PathBuf) -> Option<()> {
-        let value: &Value = &serde_yaml::from_str(contents.as_str()).ok()?;
+        let value: &Value = &serde_yaml::from_str(contents.as_str()).ok().unwrap();
 
-        // Go through all kubeconfig users
-        for (i, user) in value["users"].as_array()?.into_iter().enumerate() {
-            for user_field in ["client-certificate", "client-key"].iter() {
+        for (i, user) in value["users"].as_array().unwrap().into_iter().enumerate() {
+            for user_field in ["client-certificate-data", "client-key-data"].iter() {
+                if let Some(field_value) = user.as_object().unwrap()["user"]
+                    .as_object()
+                    .unwrap()
+                    .get(user_field.to_string().as_str())
+                {
+                    self.process_pem_bundle(
+                        field_value.as_str().unwrap(),
+                        &Location::file_yaml(
+                            yaml_path.to_string_lossy().to_string().as_str(),
+                            &format!("/users/user/{}", i),
+                            user_field,
+                            true,
+                        ),
+                    );
+                }
+            }
+        }
+
+        for (i, cluster) in value["clusters"].as_array().unwrap().into_iter().enumerate() {
+            if let Some(cluster_cert) = cluster.as_object().unwrap()["cluster"]
+                .as_object()
+                .unwrap()
+                .get("certificate-authority-data")
+            {
                 self.process_pem_bundle(
-                    user.as_object().unwrap()["user"]
-                        .as_object()?
-                        .get(user_field.to_string().as_str())?
-                        .as_str()?,
+                    cluster_cert.as_str().unwrap(),
                     &Location::file_yaml(
                         yaml_path.to_string_lossy().to_string().as_str(),
-                        &format!("/users/user/{}", i),
-                        user_field,
+                        &format!("/clusters/cluster/{}", i),
+                        "certificate-authority-data",
                         true,
                     ),
                 );
             }
-        }
-
-        for (i, cluster) in value["clusters"].as_array()?.into_iter().enumerate() {
-            self.process_pem_bundle(
-                cluster.as_object().unwrap()["cluster"]
-                    .as_object()?
-                    .get("certificate-authority-data")?
-                    .as_str()?,
-                &Location::file_yaml(
-                    yaml_path.to_string_lossy().to_string().as_str(),
-                    &format!("/clusters/cluster/{}", i),
-                    "certificate-authority-data",
-                    true,
-                ),
-            );
         }
 
         Some(())
