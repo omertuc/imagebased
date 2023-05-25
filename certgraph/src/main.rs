@@ -6,7 +6,6 @@ use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 
 mod cluster_crypto;
-mod etcd_client_certs;
 mod file_utils;
 mod json_tools;
 mod k8s_etcd;
