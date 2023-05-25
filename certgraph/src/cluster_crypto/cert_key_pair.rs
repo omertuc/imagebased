@@ -107,7 +107,6 @@ impl CertKeyPair {
     }
 
     pub(crate) async fn commit_to_etcd_and_disk(&self, etcd_client: &mut InMemoryK8sEtcd) {
-        println!("committing cert {} to etcd", self.distributed_cert.borrow().locations);
         self.commit_pair_certificate(etcd_client).await;
         self.commit_pair_key(etcd_client).await;
     }

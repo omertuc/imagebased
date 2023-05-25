@@ -1,9 +1,8 @@
 use crate::{
-    file_utils,
+    file_utils::{self, read_file_to_string},
     k8s_etcd::{self, InMemoryK8sEtcd},
     rules::{self, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS},
 };
-
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
@@ -29,7 +28,7 @@ use std::{
     collections::hash_map::Entry::{Occupied, Vacant},
     path::Path,
 };
-use tokio::{io::AsyncReadExt, sync::Mutex};
+use tokio::sync::Mutex;
 use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair};
 
 use self::{
@@ -259,7 +258,12 @@ async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) 
 }
 
 async fn get_filesystem_yaml(file_location: &FileLocation) -> Value {
-    serde_yaml::from_str(read_file_to_string(file_location.file_path.clone().into()).await.as_str()).expect("failed to parse yaml")
+    serde_yaml::from_str(
+        file_utils::read_file_to_string(file_location.file_path.clone().into())
+            .await
+            .as_str(),
+    )
+    .expect("failed to parse yaml")
 }
 
 pub(crate) struct ClusterCryptoObjects {
@@ -294,7 +298,7 @@ impl ClusterCryptoObjects {
         self.internal.lock().await.fill_jwt_signers();
     }
     pub(crate) async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
-        self.internal.lock().await.process_k8s_static_resources(k8s_dir).await;
+        self.internal.lock().await.process_filesystem_resources(k8s_dir).await;
     }
     pub(crate) async fn process_etcd_resources(&mut self, etcd_client: Arc<Mutex<InMemoryK8sEtcd>>) {
         self.internal.lock().await.process_etcd_resources(etcd_client).await;
@@ -313,6 +317,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Convenience function to display all the crypto objects in the cluster,
+    /// their relationships, and their locations.
     pub(crate) fn display(&self) {
         for cert_key_pair in &self.cert_key_pairs {
             if (**cert_key_pair).borrow().signer.as_ref().is_none() {
@@ -325,6 +331,9 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Commit all the crypto objects to etcd and disk. This is called after all the crypto
+    /// objects have been regenerated so that the newly generated objects are persisted in
+    /// etcd and on disk.
     async fn commit_to_etcd_and_disk(&mut self, etcd_client: &mut InMemoryK8sEtcd) {
         for cert_key_pair in &self.cert_key_pairs {
             (**cert_key_pair).borrow().commit_to_etcd_and_disk(etcd_client).await;
@@ -335,6 +344,10 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Recursively regenerate all the crypto objects. This is done by regenerating the top
+    /// level cert-key pairs and private keys, which will in turn regenerate all the objects
+    /// that depend on them. Requires that the crypto objects have been paired and associated
+    /// through the other methods.
     fn regenerate_crypto(&mut self) {
         for cert_key_pair in &self.cert_key_pairs {
             if (**cert_key_pair).borrow().signer.is_some() {
@@ -349,7 +362,14 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// For every jwt, find the private key that signed it (or certificate key pair that signed it,
+    /// although rare in OCP) and record it. This will later be used to know how to regenerate the
+    /// jwt.
     fn fill_jwt_signers(&mut self) {
+        // Usually it's just one private key signing all the jwts, so to speed things up, we record
+        // the last signer and use that as the first guess for the next jwt. This dramatically
+        // speeds up the process of finding the signer for each jwt, as trying all private keys is
+        // very slow, especially in debug mode without optimizations.
         let mut last_signer: Option<Rc<RefCell<DistributedPrivateKey>>> = None;
 
         for distributed_jwt in self.jwts.values() {
@@ -406,6 +426,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// For every cert-key pair or private key, find all the crypto objects that depend on it and
+    /// record them. This will later be used to know how to regenerate the crypto objects.
     fn fill_signees(&mut self) {
         for cert_key_pair in &self.cert_key_pairs {
             for potential_signee in &self.cert_key_pairs {
@@ -455,6 +477,9 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Find the private key associated with the subject of each certificate and combine them into
+    /// a cert-key pair. Also remove the private key from the list of private keys as it is now
+    /// part of a cert-key pair, the remaining private keys are considered standalone.
     fn pair_certs_and_keys(&mut self) {
         for (_hashable_cert, distributed_cert) in &self.certs {
             let mut true_signing_cert: Option<Rc<RefCell<DistributedCert>>> = None;
@@ -529,6 +554,7 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Associate public keys with their cert-key pairs or standalone private keys.
     fn associate_public_keys(&mut self) {
         for cert_key_pair in &self.cert_key_pairs {
             if let Occupied(public_key_entry) = self.public_keys.entry(
@@ -551,6 +577,9 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given an etcd key (not cryptographic key, just key as in key-value) and its contents, scan
+    /// it for cryptographic keys and certificates and record them in the appropriate data
+    /// structures.
     async fn process_etcd_key(&mut self, contents: Vec<u8>) {
         let value: &Value = &serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
         let location = K8sResourceLocation::from(value);
@@ -561,6 +590,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a configmap taken from etcd, scan it for cryptographic keys and certificates and
+    /// record them in the appropriate data structures.
     fn scan_k8s_configmap(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
         if let Some(data) = value.as_object().unwrap().get("data") {
             match data {
@@ -588,6 +619,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a secret taken from etcd, scan it for cryptographic keys and certificates and
+    /// record them in the appropriate data structures.
     fn scan_k8s_secret(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
         if k8s_resource_location.name == "node-system-admin-signer" {
             println!("Found node-system-admin-signer");
@@ -630,6 +663,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a base64-encoded value taken from a YAML field, decode it and scan it for
+    /// cryptographic keys and certificates and record them in the appropriate data structures.
     fn process_base64_value(&mut self, value: &Value, location: &Location) {
         if let Value::String(string_value) = value {
             if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
@@ -645,6 +680,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a value taken from a YAML field, scan it for cryptographic keys and certificates and
+    /// record them in the appropriate data structures.
     fn process_unknown_yaml_value(&mut self, value: String, location: &Location) {
         if let Some(_) = self.process_pem_bundle(&value, location) {
             return;
@@ -655,6 +692,8 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a value taken from a YAML field, check if it looks like a JWT and record it in the
+    /// appropriate data structures.
     fn process_jwt(&mut self, value: &str, location: &Location) -> Option<()> {
         // Need a cheap way to detect jwts that doesn't involve parsing them because we run this
         // against every secret/configmap data entry
@@ -697,6 +736,8 @@ impl ClusterCryptoObjectsInternal {
         Some(())
     }
 
+    /// Given a PEM bundle, scan it for cryptographic keys and certificates and record them in the
+    /// appropriate data structures.
     fn process_pem_bundle(&mut self, value: &str, location: &Location) -> Option<()> {
         let pems = pem::parse_many(value).unwrap();
 
@@ -713,6 +754,8 @@ impl ClusterCryptoObjectsInternal {
         Some(())
     }
 
+    /// Given a single PEM, scan it for cryptographic keys and certificates and record them in the
+    /// appropriate data structures.
     fn process_single_pem(&mut self, pem: &pem::Pem, location: &Location) {
         match pem.tag() {
             "CERTIFICATE" => {
@@ -742,6 +785,7 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a private key PEM, record it in the appropriate data structures.
     fn process_pem_private_key(&mut self, pem: &pem::Pem, location: &Location) {
         let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
@@ -752,6 +796,8 @@ impl ClusterCryptoObjectsInternal {
         self.register_private_key(private_part, location);
     }
 
+    /// Associate a private key with the public key derived from it by us. This later helps
+    /// us associate it with the certificate that contains the public key as the subject.
     fn register_private_key_public_key_mapping(&mut self, public_part: PublicKey, private_part: &PrivateKey) {
         self.public_to_private.insert(public_part, private_part.clone());
     }
@@ -777,6 +823,7 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
+    /// Given a certificate PEM, record it in the appropriate data structures.
     fn process_pem_cert(&mut self, pem: &pem::Pem, location: &Location) {
         self.register_cert(
             &x509_certificate::CapturedX509Certificate::from_der(pem.contents()).unwrap(),
@@ -814,23 +861,29 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
-        self.process_static_resource_raw_pems(k8s_dir).await;
-        self.process_static_resource_yamls(k8s_dir).await;
+    /// Recursively scans the filesystem for resources which might contain cryptographic objects
+    /// and records them in the appropriate data structures
+    async fn process_filesystem_resources(&mut self, dir: &Path) {
+        self.process_filesystem_raw_pems(dir).await;
+        self.process_filesystem_yamls(dir).await;
     }
 
-    async fn process_static_resource_raw_pems(&mut self, k8s_dir: &Path) {
+    /// Recursively scans a directoy for files which exclusively contain a PEM bundle (as opposed
+    /// to being embedded in a YAML file) and records them in the appropriate data structures.
+    async fn process_filesystem_raw_pems(&mut self, k8s_dir: &Path) {
         for raw_pem_path in file_utils::globvec(k8s_dir, "**/*.pem")
             .into_iter()
             .chain(file_utils::globvec(k8s_dir, "**/*.crt").into_iter())
             .chain(file_utils::globvec(k8s_dir, "**/*.key").into_iter())
             .chain(file_utils::globvec(k8s_dir, "**/*.pub").into_iter())
         {
-            self.process_static_resource_raw_pem(read_file_to_string(raw_pem_path.clone()).await, &raw_pem_path);
+            self.process_static_resource_raw_pem_bundle(read_file_to_string(raw_pem_path.clone()).await, &raw_pem_path);
         }
     }
 
-    async fn process_static_resource_yamls(&mut self, k8s_dir: &Path) {
+    /// Recrusively scans a directory for yaml files which might contain cryptographic objects and
+    /// records said objects in the appropriate data structures.
+    async fn process_filesystem_yamls(&mut self, k8s_dir: &Path) {
         for yaml_path in file_utils::globvec(k8s_dir, "**/kubeconfig*").into_iter() {
             if self
                 .process_static_resource_yaml(read_file_to_string(yaml_path.clone()).await, &yaml_path)
@@ -841,7 +894,9 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    fn process_static_resource_raw_pem(&mut self, contents: String, pem_file_path: &PathBuf) {
+    // Processes a filesystem pem bundle for cryptographic objects and records them in the
+    // appropriate data structures
+    fn process_static_resource_raw_pem_bundle(&mut self, contents: String, pem_file_path: &PathBuf) {
         self.process_pem_bundle(
             &contents,
             &Location::Filesystem(FileLocation {
@@ -851,7 +906,8 @@ impl ClusterCryptoObjectsInternal {
         );
     }
 
-    /// Read all relevant resources from etcd and register them in the cluster_crypto object
+    /// Read all relevant resources from etcd, scan them for cryptographic objects and record them
+    /// in the appropriate data structures.
     async fn process_etcd_resources(&mut self, etcd_client: Arc<Mutex<InMemoryK8sEtcd>>) {
         println!("Obtaining keys");
         let key_lists = {
@@ -947,15 +1003,6 @@ impl ClusterCryptoObjectsInternal {
 
         Some(())
     }
-}
-
-async fn read_file_to_string(file_path: PathBuf) -> String {
-    let mut file = tokio::fs::File::open(file_path.clone())
-        .await
-        .expect(format!("failed to open file {:?}", file_path).as_str());
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).await.expect("failed to read file");
-    contents
 }
 
 fn verify_jwt(
