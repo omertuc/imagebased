@@ -8,7 +8,7 @@ pub(crate) struct DistributedPrivateKey {
     pub(crate) key: PrivateKey,
     pub(crate) locations: Locations,
     pub(crate) signees: Vec<Signee>,
-    pub(crate) associated_public_key: Option<Rc<RefCell<DistributedPublicKey>>>,
+    pub(crate) associated_distributed_public_key: Option<Rc<RefCell<DistributedPublicKey>>>,
 }
 
 impl Display for DistributedPrivateKey {
@@ -29,7 +29,7 @@ impl Display for DistributedPrivateKey {
             writeln!(f, "- {}", signee)?;
         }
 
-        if let Some(public_key) = &self.associated_public_key {
+        if let Some(public_key) = &self.associated_distributed_public_key {
             writeln!(f, "* Associated public key at {}", (*public_key).borrow())?;
         }
 

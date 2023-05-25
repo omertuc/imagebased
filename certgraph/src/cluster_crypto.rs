@@ -572,7 +572,7 @@ impl ClusterCryptoObjectsInternal {
             let cert_pub: PublicKey = (&(**distributed_private_key).borrow().key).into();
 
             if let Occupied(public_key_entry) = self.public_keys.entry(cert_pub) {
-                (*distributed_private_key).borrow_mut().associated_public_key = Some(Rc::clone(public_key_entry.get()));
+                (*distributed_private_key).borrow_mut().associated_distributed_public_key = Some(Rc::clone(public_key_entry.get()));
             }
         }
     }
@@ -809,7 +809,7 @@ impl ClusterCryptoObjectsInternal {
                     locations: Locations(vec![location.clone()].into_iter().collect()),
                     key: private_part,
                     signees: vec![],
-                    associated_public_key: None,
+                    associated_distributed_public_key: None,
                 })));
             }
 
