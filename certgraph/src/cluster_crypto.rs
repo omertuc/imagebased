@@ -350,17 +350,27 @@ impl ClusterCryptoObjectsInternal {
     }
 
     fn fill_jwt_signers(&mut self) {
+        let mut last_signer: Option<Rc<RefCell<DistributedPrivateKey>>> = None;
+
         for distributed_jwt in self.jwts.values() {
             let mut maybe_signer = JwtSigner::Unknown;
 
-            for cert_key_pair in &self.cert_key_pairs {
-                if let Some(distributed_private_key) = &(**cert_key_pair).borrow().distributed_private_key {
+            if let Some(last_signer) = &last_signer {
+                match verify_jwt(&PublicKey::from(&(*last_signer).borrow().key), &(**distributed_jwt).borrow()) {
+                    Ok(_claims /* We don't care about the claims, only that the signature is correct */) => {
+                        maybe_signer = JwtSigner::PrivateKey(Rc::clone(&last_signer));
+                    }
+                    Err(_error) => {}
+                }
+            } else {
+                for distributed_private_key in self.private_keys.values() {
                     match verify_jwt(
                         &PublicKey::from(&(**distributed_private_key).borrow().key),
                         &(**distributed_jwt).borrow(),
                     ) {
                         Ok(_claims /* We don't care about the claims, only that the signature is correct */) => {
-                            maybe_signer = JwtSigner::CertKeyPair(Rc::clone(cert_key_pair));
+                            maybe_signer = JwtSigner::PrivateKey(Rc::clone(distributed_private_key));
+                            last_signer = Some(Rc::clone(&distributed_private_key));
                             break;
                         }
                         Err(_error) => {}
@@ -370,21 +380,26 @@ impl ClusterCryptoObjectsInternal {
 
             match &maybe_signer {
                 JwtSigner::Unknown => {
-                    // Try free form private keys
-                    for distributed_private_key in self.private_keys.values() {
-                        match verify_jwt(
-                            &PublicKey::from(&(**distributed_private_key).borrow().key),
-                            &(**distributed_jwt).borrow(),
-                        ) {
-                            Ok(_claims /* We don't care about the claims, only that the signature is correct */) => {
-                                maybe_signer = JwtSigner::PrivateKey(Rc::clone(distributed_private_key));
-                                break;
+                    for cert_key_pair in &self.cert_key_pairs {
+                        if let Some(distributed_private_key) = &(**cert_key_pair).borrow().distributed_private_key {
+                            match verify_jwt(
+                                &PublicKey::from(&(**distributed_private_key).borrow().key),
+                                &(**distributed_jwt).borrow(),
+                            ) {
+                                Ok(_claims /* We don't care about the claims, only that the signature is correct */) => {
+                                    maybe_signer = JwtSigner::CertKeyPair(Rc::clone(cert_key_pair));
+                                    break;
+                                }
+                                Err(_error) => {}
                             }
-                            Err(_error) => {}
                         }
                     }
                 }
                 _ => {}
+            }
+
+            if maybe_signer == JwtSigner::Unknown {
+                panic!("JWT has unknown signer");
             }
 
             (**distributed_jwt).borrow_mut().signer = maybe_signer;
