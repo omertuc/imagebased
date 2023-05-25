@@ -1004,20 +1004,21 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    fn process_static_resource_yaml(&mut self, contents: String, yaml_path: &PathBuf) {
-        let value: &Value = &serde_yaml::from_str(contents.as_str()).expect("failed to parse yaml");
+    fn process_static_resource_yaml(
+        &mut self,
+        contents: String,
+        yaml_path: &PathBuf,
+    ) -> Option<()> {
+        let value: &Value = &serde_yaml::from_str(contents.as_str()).ok()?;
 
         // Go through all kubeconfig users
-        for (i, user) in value["users"].as_array().unwrap().into_iter().enumerate() {
+        for (i, user) in value["users"].as_array()?.into_iter().enumerate() {
             for user_field in ["client-certificate", "client-key"].iter() {
                 self.process_pem_bundle(
                     user.as_object().unwrap()["user"]
-                        .as_object()
-                        .unwrap()
-                        .get(user_field.to_string().as_str())
-                        .unwrap()
-                        .as_str()
-                        .unwrap(),
+                        .as_object()?
+                        .get(user_field.to_string().as_str())?
+                        .as_str()?,
                     &Location::file_yaml(
                         yaml_path.to_string_lossy().to_string().as_str(),
                         &format!("/users/user/{}", i),
@@ -1028,20 +1029,12 @@ impl ClusterCryptoObjectsInternal {
             }
         }
 
-        for (i, cluster) in value["clusters"]
-            .as_array()
-            .unwrap()
-            .into_iter()
-            .enumerate()
-        {
+        for (i, cluster) in value["clusters"].as_array()?.into_iter().enumerate() {
             self.process_pem_bundle(
                 cluster.as_object().unwrap()["cluster"]
-                    .as_object()
-                    .unwrap()
-                    .get("certificate-authority-data")
-                    .unwrap()
-                    .as_str()
-                    .unwrap(),
+                    .as_object()?
+                    .get("certificate-authority-data")?
+                    .as_str()?,
                 &Location::file_yaml(
                     yaml_path.to_string_lossy().to_string().as_str(),
                     &format!("/clusters/cluster/{}", i),
@@ -1050,13 +1043,15 @@ impl ClusterCryptoObjectsInternal {
                 ),
             );
         }
+
+        Some(())
     }
 }
 
 async fn read_file_to_string(file_path: PathBuf) -> String {
-    let mut file = tokio::fs::File::open(file_path)
+    let mut file = tokio::fs::File::open(file_path.clone())
         .await
-        .expect("failed to open file");
+        .expect(format!("failed to open file {:?}", file_path).as_str());
     let mut contents = String::new();
     file.read_to_string(&mut contents)
         .await
