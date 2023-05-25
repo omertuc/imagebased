@@ -82,10 +82,8 @@ async fn print_summary(cluster_crypto: ClusterCryptoObjects) {
 
 async fn commit_cryptographic_objects_back(in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>, cluster_crypto: &ClusterCryptoObjects) {
     println!("Committing changes...");
-    {
-        let mut etcd_client = in_memory_etcd_client.lock().await;
-        cluster_crypto.commit_to_etcd_and_disk(&mut etcd_client).await;
-    }
+    let mut etcd_client = in_memory_etcd_client.lock().await;
+    cluster_crypto.commit_to_etcd_and_disk(&mut etcd_client).await;
 }
 
 async fn regenerate_cryptographic_objects(cluster_crypto: &ClusterCryptoObjects) {
