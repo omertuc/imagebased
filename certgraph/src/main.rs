@@ -17,30 +17,17 @@ mod rules;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Name of the person to greet
+    // etcd endpoint to recertify
     #[arg(short, long)]
-    etcd_host: String,
+    etcd_endpoint: String,
 
-    /// /etc/kubernetes directory
+    /// /etc/kubernetes directory to recertifiy
     #[arg(short, long)]
     k8s_static_dir: PathBuf,
 
-    /// /var/lib/kubelet directory
+    /// /var/lib/kubelet directory to recertify
     #[arg(short, long)]
     kubelet_dir: PathBuf,
-}
-
-async fn init() -> (PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
-    let args = Args::parse();
-
-    let etcd_client = EtcdClient::connect([args.etcd_host.as_str()], None).await.unwrap();
-
-    let static_resource_dir = args.k8s_static_dir;
-    let kubelet_dir = args.kubelet_dir;
-    let cluster_crypto = ClusterCryptoObjects::new();
-    let in_memory_etcd_client = Arc::new(Mutex::new(InMemoryK8sEtcd::new(etcd_client)));
-
-    (kubelet_dir, static_resource_dir, cluster_crypto, in_memory_etcd_client)
 }
 
 #[tokio::main]
@@ -56,10 +43,17 @@ async fn main() -> Result<(), ()> {
     print_summary(cluster_crypto).await
 }
 
-async fn print_summary(cluster_crypto: ClusterCryptoObjects) -> Result<(), ()> {
-    println!("Crypto graph...");
-    cluster_crypto.display().await;
-    Ok(())
+async fn init() -> (PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
+    let args = Args::parse();
+
+    let etcd_client = EtcdClient::connect([args.etcd_endpoint.as_str()], None).await.unwrap();
+
+    let static_resource_dir = args.k8s_static_dir;
+    let kubelet_dir = args.kubelet_dir;
+    let cluster_crypto = ClusterCryptoObjects::new();
+    let in_memory_etcd_client = Arc::new(Mutex::new(InMemoryK8sEtcd::new(etcd_client)));
+
+    (kubelet_dir, static_resource_dir, cluster_crypto, in_memory_etcd_client)
 }
 
 async fn recertify(
@@ -81,6 +75,12 @@ async fn finalize(in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>, cluster_cr
     // etcd after we're done
     println!("Committing to etcd...");
     in_memory_etcd_client.lock().await.commit_to_actual_etcd().await;
+}
+
+async fn print_summary(cluster_crypto: ClusterCryptoObjects) -> Result<(), ()> {
+    println!("Crypto graph...");
+    cluster_crypto.display().await;
+    Ok(())
 }
 
 async fn commit_cryptographic_objects_back(in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>, cluster_crypto: &ClusterCryptoObjects) {
