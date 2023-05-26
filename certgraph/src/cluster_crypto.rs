@@ -809,6 +809,9 @@ impl ClusterCryptoObjectsInternal {
                     locations: Locations(vec![location.clone()].into_iter().collect()),
                     key: private_part,
                     signees: vec![],
+                    // We don't set the public key here even though we just generated it because
+                    // this field is for actual public keys that we find in the wild, not ones we
+                    // generate ourselves.
                     associated_distributed_public_key: None,
                 })));
             }
@@ -970,11 +973,11 @@ impl ClusterCryptoObjectsInternal {
                     .unwrap()
                     .get(user_field.to_string().as_str())
                 {
-                    self.process_pem_bundle(
-                        field_value.as_str().unwrap(),
+                    self.process_base64_value(
+                        field_value,
                         &Location::file_yaml(
                             yaml_path.to_string_lossy().to_string().as_str(),
-                            &format!("/users/user/{}", i),
+                            &format!("/users/{}/user", i),
                             user_field,
                             true,
                         ),
@@ -989,11 +992,11 @@ impl ClusterCryptoObjectsInternal {
                 .unwrap()
                 .get("certificate-authority-data")
             {
-                self.process_pem_bundle(
-                    cluster_cert.as_str().unwrap(),
+                self.process_base64_value(
+                    cluster_cert,
                     &Location::file_yaml(
                         yaml_path.to_string_lossy().to_string().as_str(),
-                        &format!("/clusters/cluster/{}", i),
+                        &format!("/clusters/{}/cluster", i),
                         "certificate-authority-data",
                         true,
                     ),

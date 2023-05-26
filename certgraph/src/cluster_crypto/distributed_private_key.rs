@@ -39,8 +39,7 @@ impl Display for DistributedPrivateKey {
 
 impl DistributedPrivateKey {
     pub(crate) fn regenerate(&mut self) {
-        let mut rng = rand::thread_rng();
-        let (self_new_rsa_private_key, self_new_key_pair) = generate_rsa_key(&mut rng);
+        let (self_new_rsa_private_key, self_new_key_pair) = generate_rsa_key();
 
         for signee in &mut self.signees {
             signee.regenerate(&PublicKey::from(&self.key), Some(&self_new_key_pair));

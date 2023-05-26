@@ -56,10 +56,8 @@ impl CertKeyPair {
         &mut self,
         sign_with: Option<&InMemorySigningKeyPair>,
     ) -> (InMemorySigningKeyPair, RsaPrivateKey, CapturedX509Certificate) {
-        let mut rng = rand::thread_rng();
-
         // Generate a new RSA key for this cert
-        let (self_new_rsa_private_key, self_new_key_pair) = generate_rsa_key(&mut rng);
+        let (self_new_rsa_private_key, self_new_key_pair) = generate_rsa_key();
 
         // Copy the to-be-signed part of the certificate from the original certificate
         let cert: &X509Certificate = &(*self.distributed_cert).borrow().certificate.original;
@@ -114,6 +112,10 @@ impl CertKeyPair {
                     self.commit_k8s_cert(etcd_client, &k8slocation).await;
                 }
                 Location::Filesystem(filelocation) => {
+                    if filelocation.file_path == "kubelet/kubeconfig" {
+                        println!("committing kubeconfig");
+                    }
+
                     self.commit_filesystem_cert(&filelocation).await;
                 }
             }
@@ -301,7 +303,7 @@ fn recreate_yaml_at_location_with_new_pem(
             }
         }
         None => {
-            panic!("shouldn't happen");
+            panic!("shouldn't happen {} {:#?}", resource.to_string(), yaml_location);
         }
     }
     let newcontents = serde_yaml::to_string(&resource).unwrap();
