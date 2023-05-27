@@ -89,11 +89,10 @@ ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostK
 ## Copy
 
 ```bash
-cd /home/omer/repos/bootstrap-in-place-poc
-
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo mkdir -p /root/.local/bin
 scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/imagebased/certgraph/target/x86_64-unknown-linux-gnu/release/certgraph core@192.168.126.10:certgraph
 scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/auger/auger core@192.168.126.10:
+scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/bootstrap-in-place-poc/sno-workdir/auth/kubeconfig core@192.168.126.10:
 
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/auger /root/.local/bin/
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/certgraph /root/.local/bin/
@@ -103,11 +102,10 @@ ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostK
 
 ```bash
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo ulimit -n 999999
-ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo bash -ic "'certgraph --etcd-endpoint localhost:2379 --k8s-static-dir /etc/kubernetes --kubelet-dir /var/lib/kubelet'"
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo bash -ic "'certgraph --etcd-endpoint localhost:2379 --k8s-static-dir /etc/kubernetes --kubelet-dir /var/lib/kubelet --kubeconfig /home/core/kubeconfig'"
 ```
 
-## Start kubelet and crio
+## Copy new kubeconfig
 ```bash
-ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl start kubelet
-ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl start crio
+scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10:kubeconfig /home/omer/repos/bootstrap-in-place-poc/sno-workdir/auth/kubeconfig2
 ```

@@ -41,7 +41,7 @@ lazy_static! {
         "CN=root-ca, OU=openshift",
         // As of OCP 4.14 you can see the private key being dropped here:
         // https://github.com/operator-framework/operator-lifecycle-manager/blob/9ced412f3e263b8827680dc0ad3477327cd9a508/pkg/controller/install/certresources.go#L295
-        "CN=olm-selfsigned-4f81ca26943a80f2, O=Red Hat, Inc.",
+        "CN=olm-selfsigned-44ab71e4901a7b7d, O=Red Hat, Inc.",
     ]
         .into_iter()
         .map(str::to_string)

@@ -598,8 +598,6 @@ impl ClusterCryptoObjectsInternal {
                     }
                 }
 
-                println!("Public key: {:#?}", subject_public_key);
-
                 panic!(
                     "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}. The cert was found in {}",
                     (**distributed_cert).borrow().certificate.subject,
