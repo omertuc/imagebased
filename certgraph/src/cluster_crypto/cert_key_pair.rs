@@ -23,7 +23,7 @@ pub(crate) struct CertKeyPair {
 
     /// The signer is the cert that signed this cert. If this is a self-signed cert, then this will
     /// be None
-    pub(crate) signer: Option<Rc<RefCell<DistributedCert>>>,
+    pub(crate) signer: Option<Rc<RefCell<CertKeyPair>>>,
     /// The signees are the certs or jwts that this cert has signed
     pub(crate) signees: Vec<Signee>,
     /// Sometimes cert public keys also appear on their own, outside the cert, so we need to track
@@ -32,6 +32,14 @@ pub(crate) struct CertKeyPair {
 }
 
 impl CertKeyPair {
+    pub(crate) fn num_parents(&self) -> usize {
+        if let Some(signer) = self.signer.as_ref() {
+            1 + signer.borrow().num_parents()
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn regenerate(&mut self, sign_with: Option<&InMemorySigningKeyPair>) {
         let (new_cert_subject_key_pair, rsa_private_key, new_cert) = self.re_sign_cert(sign_with);
         (*self.distributed_cert).borrow_mut().certificate = Certificate::from(new_cert);
@@ -236,6 +244,10 @@ impl CertKeyPair {
 
 impl Display for CertKeyPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for _ in 0..self.num_parents() {
+            write!(f, "-")?;
+        }
+
         write!(
             f,
             "Cert {:03} locations {}, ",
@@ -250,9 +262,7 @@ impl Display for CertKeyPair {
                 format!(
                     "priv {:03} locations {}",
                     (**self.distributed_private_key.as_ref().unwrap()).borrow().locations.0.len(),
-                    (**self.distributed_private_key.as_ref().unwrap())
-                        .borrow()
-                        .locations,
+                    (**self.distributed_private_key.as_ref().unwrap()).borrow().locations,
                     // "<>",
                 )
             } else {
@@ -266,7 +276,7 @@ impl Display for CertKeyPair {
         }
 
         for signee in &self.signees {
-            writeln!(f, "- {}", signee)?;
+            writeln!(f, "{}", signee)?;
         }
 
         if let Some(associated_public_key) = &self.associated_public_key {

@@ -331,11 +331,17 @@ impl ClusterCryptoObjects {
     pub(crate) async fn associate_public_keys(&mut self) {
         self.internal.lock().await.associate_public_keys();
     }
+    pub(crate) async fn fill_cert_key_signers(&mut self) {
+        self.internal.lock().await.fill_cert_key_signers();
+    }
     pub(crate) async fn fill_jwt_signers(&mut self) {
         self.internal.lock().await.fill_jwt_signers();
     }
     pub(crate) async fn process_k8s_static_resources(&mut self, k8s_dir: &Path) {
         self.internal.lock().await.process_filesystem_resources(k8s_dir).await;
+    }
+    pub(crate) async fn process_static_resource_yaml(&mut self, contents: String, yaml_path: &PathBuf) {
+        self.internal.lock().await.process_static_resource_yaml(contents, yaml_path);
     }
     pub(crate) async fn process_etcd_resources(&mut self, etcd_client: Arc<Mutex<InMemoryK8sEtcd>>) {
         self.internal.lock().await.process_etcd_resources(etcd_client).await;
@@ -396,6 +402,51 @@ impl ClusterCryptoObjectsInternal {
 
         for private_key in self.private_keys.values() {
             (**private_key).borrow_mut().regenerate()
+        }
+    }
+
+    fn fill_cert_key_signers(&mut self) {
+        for cert_key_pair in &self.cert_key_pairs {
+            let mut true_signing_cert: Option<Rc<RefCell<CertKeyPair>>> = None;
+            if !(*(**cert_key_pair).borrow().distributed_cert)
+                .borrow()
+                .certificate
+                .original
+                .subject_is_issuer()
+            {
+                for potential_signing_cert_key_pair in &self.cert_key_pairs {
+                    match (*(**cert_key_pair).borrow().distributed_cert)
+                        .borrow()
+                        .certificate
+                        .original
+                        .verify_signed_by_certificate(
+                            &(*(*potential_signing_cert_key_pair).borrow().distributed_cert)
+                                .borrow()
+                                .certificate
+                                .original,
+                        ) {
+                        Ok(_) => true_signing_cert = Some(Rc::clone(&potential_signing_cert_key_pair)),
+                        Err(err) => match err {
+                            X509CertificateError::CertificateSignatureVerificationFailed => {}
+                            X509CertificateError::UnsupportedSignatureVerification(..) => {
+                                // This is a hack to get around the fact this lib doesn't support
+                                // all signature algorithms yet.
+                                if openssl_is_signed(&potential_signing_cert_key_pair, &cert_key_pair) {
+                                    true_signing_cert = Some(Rc::clone(&potential_signing_cert_key_pair));
+                                }
+                            }
+                            _ => panic!("Error verifying signed by certificate: {:?}", err),
+                        },
+                    }
+                }
+
+                if true_signing_cert.is_none() {
+                    panic!(
+                        "No signing cert found for {}",
+                        (*(**cert_key_pair).borrow().distributed_cert).borrow().locations
+                    );
+                }
+            }
         }
     }
 
@@ -470,7 +521,10 @@ impl ClusterCryptoObjectsInternal {
             let mut signees = Vec::new();
             for potential_signee in &self.cert_key_pairs {
                 if let Some(potential_signee_signer) = &(**potential_signee).borrow().signer {
-                    if (**potential_signee_signer).borrow().certificate.original
+                    if (*(**potential_signee_signer).borrow().distributed_cert)
+                        .borrow()
+                        .certificate
+                        .original
                         == (*(**cert_key_pair).borrow().distributed_cert).borrow().certificate.original
                     {
                         signees.push(Signee::CertKeyPair(Rc::clone(&potential_signee)));
@@ -515,39 +569,10 @@ impl ClusterCryptoObjectsInternal {
     /// part of a cert-key pair, the remaining private keys are considered standalone.
     fn pair_certs_and_keys(&mut self) {
         for (_hashable_cert, distributed_cert) in &self.certs {
-            let mut true_signing_cert: Option<Rc<RefCell<DistributedCert>>> = None;
-            if !(**distributed_cert).borrow().certificate.original.subject_is_issuer() {
-                for potential_signing_cert in self.certs.values() {
-                    match (**distributed_cert)
-                        .borrow()
-                        .certificate
-                        .original
-                        .verify_signed_by_certificate(&(**potential_signing_cert).borrow().certificate.original)
-                    {
-                        Ok(_) => true_signing_cert = Some(Rc::clone(potential_signing_cert)),
-                        Err(err) => match err {
-                            X509CertificateError::CertificateSignatureVerificationFailed => {}
-                            X509CertificateError::UnsupportedSignatureVerification(..) => {
-                                // This is a hack to get around the fact this lib doesn't support
-                                // all signature algorithms yet.
-                                if openssl_is_signed(potential_signing_cert, distributed_cert) {
-                                    true_signing_cert = Some(Rc::clone(potential_signing_cert));
-                                }
-                            }
-                            _ => panic!("Error verifying signed by certificate: {:?}", err),
-                        },
-                    }
-                }
-
-                if true_signing_cert.is_none() {
-                    panic!("No signing cert found for {}", (**distributed_cert).borrow().locations);
-                }
-            }
-
             let pair = Rc::new(RefCell::new(cert_key_pair::CertKeyPair {
                 distributed_private_key: None,
                 distributed_cert: Rc::clone(distributed_cert),
-                signer: true_signing_cert,
+                signer: None,
                 signees: Vec::new(),
                 associated_public_key: None,
             }));
@@ -1067,14 +1092,28 @@ impl ClusterCryptoObjectsInternal {
 /// Shell out to openssl to verify that a certificate is signed by a given signing certificate. We
 /// use this when our certificate lib doesn't support the signature algorithm used by the
 /// certificates.
-fn openssl_is_signed(potential_signing_cert: &Rc<RefCell<DistributedCert>>, distributed_cert: &Rc<RefCell<DistributedCert>>) -> bool {
+fn openssl_is_signed(potential_signer: &Rc<RefCell<CertKeyPair>>, signee: &Rc<RefCell<CertKeyPair>>) -> bool {
     let mut signing_cert_file = tempfile::NamedTempFile::new().unwrap();
     signing_cert_file
-        .write_all(&(**potential_signing_cert).borrow().certificate.original.encode_pem().as_bytes())
+        .write_all(
+            &(*(**potential_signer).borrow().distributed_cert)
+                .borrow()
+                .certificate
+                .original
+                .encode_pem()
+                .as_bytes(),
+        )
         .unwrap();
     let mut signed_cert_file = tempfile::NamedTempFile::new().unwrap();
     signed_cert_file
-        .write_all(&(**distributed_cert).borrow().certificate.original.encode_pem().as_bytes())
+        .write_all(
+            &(*(**signee).borrow().distributed_cert)
+                .borrow()
+                .certificate
+                .original
+                .encode_pem()
+                .as_bytes(),
+        )
         .unwrap();
     let mut openssl_verify_command = Command::new("openssl");
     openssl_verify_command
