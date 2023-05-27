@@ -467,33 +467,29 @@ impl ClusterCryptoObjectsInternal {
     /// record them. This will later be used to know how to regenerate the crypto objects.
     fn fill_signees(&mut self) {
         for cert_key_pair in &self.cert_key_pairs {
+            let mut signees = Vec::new();
             for potential_signee in &self.cert_key_pairs {
                 if let Some(potential_signee_signer) = &(**potential_signee).borrow().signer {
                     if (**potential_signee_signer).borrow().certificate.original
                         == (*(**cert_key_pair).borrow().distributed_cert).borrow().certificate.original
                     {
-                        (**cert_key_pair)
-                            .borrow_mut()
-                            .signees
-                            .push(Signee::CertKeyPair(Rc::clone(&potential_signee)));
+                        signees.push(Signee::CertKeyPair(Rc::clone(&potential_signee)));
                     }
                 }
             }
-
             for potential_jwt_signee in self.jwts.values() {
                 match &(**potential_jwt_signee).borrow_mut().signer {
                     JwtSigner::Unknown => panic!("JWT has unknown signer"),
                     JwtSigner::CertKeyPair(jwt_signer_cert_key_pair) => {
                         if jwt_signer_cert_key_pair == cert_key_pair {
-                            (**cert_key_pair)
-                                .borrow_mut()
-                                .signees
-                                .push(Signee::Jwt(Rc::clone(potential_jwt_signee)));
+                            signees.push(Signee::Jwt(Rc::clone(potential_jwt_signee)));
                         }
                     }
                     JwtSigner::PrivateKey(_) => {}
                 }
             }
+
+            (**cert_key_pair).borrow_mut().signees = signees;
         }
 
         for distributed_private_key in self.private_keys.values() {
@@ -902,12 +898,18 @@ impl ClusterCryptoObjectsInternal {
             x509_certificate::KeyAlgorithm::Rsa => {}
             x509_certificate::KeyAlgorithm::Ecdsa(_) => {}
             x509_certificate::KeyAlgorithm::Ed25519 => {
-                return;
+                panic!("ed25519 unsupported at {}", location);
             }
         }
 
         match self.certs.entry(hashable_cert.clone()) {
             Vacant(distributed_cert) => {
+                if let Location::Filesystem(file_location) = location {
+                    if file_location.file_path.ends_with("kubelet-ca.crt") {
+                        println!("First one {}", hashable_cert.subject.to_string());
+                    }
+                }
+
                 distributed_cert.insert(Rc::new(RefCell::new(DistributedCert {
                     certificate: hashable_cert,
                     locations: Locations(vec![location.clone()].into_iter().collect()),
@@ -1078,7 +1080,10 @@ fn openssl_is_signed(potential_signing_cert: &Rc<RefCell<DistributedCert>>, dist
     openssl_verify_command
         .arg("verify")
         .arg("-no_check_time")
-        .arg("-CAfile")
+        .arg("-no-CAfile")
+        .arg("-no-CApath")
+        .arg("-partial_chain")
+        .arg("-trusted")
         .arg(signing_cert_file.path())
         .arg(signed_cert_file.path());
     let openssl_verify_output = openssl_verify_command.output().unwrap();
