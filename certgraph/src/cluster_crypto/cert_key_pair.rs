@@ -252,8 +252,8 @@ impl Display for CertKeyPair {
             f,
             "Cert {:03} locations {}, ",
             (*self.distributed_cert).borrow().locations.0.len(),
-            // "<>",
-            (*self.distributed_cert).borrow().locations,
+            "<>",
+            // (*self.distributed_cert).borrow().locations,
         )?;
         write!(
             f,
@@ -262,8 +262,8 @@ impl Display for CertKeyPair {
                 format!(
                     "priv {:03} locations {}",
                     (**self.distributed_private_key.as_ref().unwrap()).borrow().locations.0.len(),
-                    (**self.distributed_private_key.as_ref().unwrap()).borrow().locations,
-                    // "<>",
+                    // (**self.distributed_private_key.as_ref().unwrap()).borrow().locations,
+                    "<>",
                 )
             } else {
                 "NO PRIV".to_string()

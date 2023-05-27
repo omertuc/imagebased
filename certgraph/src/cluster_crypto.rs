@@ -240,7 +240,7 @@ impl Display for Signee {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Signee::CertKeyPair(cert_key_pair) => {
-                write!(f, "CertKeyPair({})", (**cert_key_pair).borrow())
+                write!(f, "{}", (**cert_key_pair).borrow())
             }
             Signee::Jwt(jwt) => write!(f, "Jwt({})", (**jwt).borrow().locations),
         }
@@ -447,6 +447,8 @@ impl ClusterCryptoObjectsInternal {
                     );
                 }
             }
+
+            (**cert_key_pair).borrow_mut().signer = true_signing_cert;
         }
     }
 
