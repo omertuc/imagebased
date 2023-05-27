@@ -38,6 +38,7 @@ lazy_static! {
 
     pub(crate) static ref EXTERNAL_CERTS: HashSet<String> = vec![
         "undecodable", // Some CA use Teletex encoding for their subject and our x509 lib doesn't like dealing with that
+        "CN=GlobalSign, OU=GlobalSign ECC Root CA - R5, O=GlobalSign",
         "CN=ACCVRAIZ1, OU=PKIACCV, O=ACCV, C=ES",
         "CN=Network Solutions Certificate Authority, O=Network Solutions L.L.C., C=US",
         "CN=IdenTrust Commercial Root CA 1, O=IdenTrust, C=US",

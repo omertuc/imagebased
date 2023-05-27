@@ -112,10 +112,6 @@ impl CertKeyPair {
                     self.commit_k8s_cert(etcd_client, &k8slocation).await;
                 }
                 Location::Filesystem(filelocation) => {
-                    if filelocation.file_path == "kubelet/kubeconfig" {
-                        println!("committing kubeconfig");
-                    }
-
                     self.commit_filesystem_cert(&filelocation).await;
                 }
             }
@@ -180,6 +176,7 @@ impl CertKeyPair {
     ) {
         let private_key_pem = match &private_key.key {
             PrivateKey::Rsa(rsa_private_key) => pem::Pem::new("RSA PRIVATE KEY", rsa_private_key.to_pkcs1_der().unwrap().as_bytes()),
+            PrivateKey::Ec(ec_bytes) => pem::Pem::new("EC PRIVATE KEY", ec_bytes.as_ref()),
         };
 
         tokio::fs::write(
@@ -243,8 +240,8 @@ impl Display for CertKeyPair {
             f,
             "Cert {:03} locations {}, ",
             (*self.distributed_cert).borrow().locations.0.len(),
-            "<>",
-            // (*self.distributed_cert).borrow().locations,
+            // "<>",
+            (*self.distributed_cert).borrow().locations,
         )?;
         write!(
             f,
@@ -253,10 +250,10 @@ impl Display for CertKeyPair {
                 format!(
                     "priv {:03} locations {}",
                     (**self.distributed_private_key.as_ref().unwrap()).borrow().locations.0.len(),
-                    // (**self.distributed_private_key.as_ref().unwrap())
-                    //     .borrow()
-                    //     .locations,
-                    "<>",
+                    (**self.distributed_private_key.as_ref().unwrap())
+                        .borrow()
+                        .locations,
+                    // "<>",
                 )
             } else {
                 "NO PRIV".to_string()

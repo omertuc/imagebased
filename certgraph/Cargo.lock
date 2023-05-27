@@ -245,6 +245,7 @@ dependencies = [
  "indicatif",
  "jwt-simple",
  "lazy_static",
+ "p256",
  "pem 2.0.1",
  "pkcs1 0.7.5",
  "rand",
@@ -254,6 +255,8 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "signatory",
+ "tempfile",
  "tokio",
  "tokio-test",
  "x509-certificate",
@@ -1735,6 +1738,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "signatory"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc8ecc2acd72ef8de39275cd081889c712de0574a20356d0afbcb9883c649f2a"
+dependencies = [
+ "ecdsa",
+ "p256",
+ "pkcs8 0.10.2",
+ "rand_core",
+ "signature 2.1.0",
+ "zeroize",
 ]
 
 [[package]]

@@ -12,7 +12,9 @@ use bytes::Bytes;
 use futures_util::future::join_all;
 use jwt_simple::prelude::RSAPublicKeyLike;
 use locations::{FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, LocationValueType, YamlLocation};
+use p256::SecretKey;
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 use rsa::RsaPrivateKey;
 use serde_json::{Map, Value};
 use std::{
@@ -20,7 +22,9 @@ use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
     hash::{Hash, Hasher},
+    io::Write,
     path::PathBuf,
+    process::{Command, Stdio},
     rc::Rc,
     sync::Arc,
 };
@@ -29,10 +33,11 @@ use std::{
     path::Path,
 };
 use tokio::sync::Mutex;
-use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair};
+use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair, X509CertificateError};
 
 use self::{
-    cert_key_pair::CertKeyPair, distributed_jwt::DistributedJwt, distributed_private_key::DistributedPrivateKey, locations::Locations,
+    cert_key_pair::CertKeyPair, distributed_jwt::DistributedJwt, distributed_private_key::DistributedPrivateKey,
+    distributed_public_key::DistributedPublicKey, locations::Locations,
 };
 
 pub(crate) mod cert_key_pair;
@@ -54,13 +59,14 @@ pub(crate) struct ClusterCryptoObjectsInternal {
     /// as we scan more and more resources. The hashmap keys are of-course hashables so we can
     /// easily check if we already encountered the object before.
     pub(crate) private_keys: HashMap<PrivateKey, Rc<RefCell<DistributedPrivateKey>>>,
-    pub(crate) public_keys: HashMap<PublicKey, Rc<RefCell<distributed_public_key::DistributedPublicKey>>>,
+    pub(crate) public_keys: HashMap<PublicKey, Rc<RefCell<DistributedPublicKey>>>,
     pub(crate) certs: HashMap<Certificate, Rc<RefCell<DistributedCert>>>,
     pub(crate) jwts: HashMap<Jwt, Rc<RefCell<DistributedJwt>>>,
 
     /// Every time we encounter a private key, we extract the public key
     /// from it and add to this mapping. This will later allow us to easily
-    /// associate certificates with their matching private key
+    /// associate certificates with their matching private key (which would
+    /// otherwise require brute force search).
     pub(crate) public_to_private: HashMap<PublicKey, PrivateKey>,
 
     /// After collecting all certs and private keys, we go through the list of certs and try to
@@ -72,12 +78,14 @@ pub(crate) struct ClusterCryptoObjectsInternal {
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PrivateKey {
     Rsa(RsaPrivateKey),
+    Ec(Bytes),
 }
 
 impl std::fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rsa(_) => write!(f, "<rsa_priv>"),
+            Self::Ec(_) => write!(f, "<ec_priv>"),
         }
     }
 }
@@ -86,6 +94,7 @@ impl PrivateKey {
     fn pem(&self) -> pem::Pem {
         match &self {
             PrivateKey::Rsa(rsa_private_key) => pem::Pem::new("RSA PRIVATE KEY", rsa_private_key.to_pkcs1_der().unwrap().as_bytes()),
+            PrivateKey::Ec(ec_bytes) => pem::Pem::new("EC PRIVATE KEY", ec_bytes.as_ref()),
         }
     }
 }
@@ -93,6 +102,7 @@ impl PrivateKey {
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PublicKey {
     Rsa(Bytes),
+    Ec(Bytes),
     Raw(Bytes),
 }
 
@@ -102,6 +112,10 @@ impl From<&PrivateKey> for PublicKey {
             PrivateKey::Rsa(private_key) => PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(
                 private_key.to_public_key().to_pkcs1_der().unwrap().as_bytes(),
             )),
+            PrivateKey::Ec(ec_bytes) => {
+                let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, ec_bytes).unwrap();
+                PublicKey::Ec(Bytes::copy_from_slice(pair.public_key().as_ref()))
+            }
         }
     }
 }
@@ -117,6 +131,7 @@ impl std::fmt::Debug for PublicKey {
         match self {
             Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
             Self::Rsa(x) => write!(f, "<rsa_pub: {:?}>", x),
+            Self::Ec(x) => write!(f, "<ec_pub: {:?}>", x),
         }
     }
 }
@@ -161,9 +176,13 @@ impl From<CapturedX509Certificate> for Certificate {
                 return "undecodable".to_string();
             }),
             public_key: match cert.key_algorithm().unwrap() {
-                x509_certificate::KeyAlgorithm::Rsa => PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(&cert.public_key_data())),
-                x509_certificate::KeyAlgorithm::Ecdsa(_) => PublicKey::Raw(cert.public_key_data()),
-                x509_certificate::KeyAlgorithm::Ed25519 => PublicKey::Raw(cert.public_key_data()),
+                x509_certificate::KeyAlgorithm::Rsa => PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(
+                    &bytes::Bytes::copy_from_slice(&cert.public_key_data()),
+                )),
+                x509_certificate::KeyAlgorithm::Ecdsa(_) => {
+                    PublicKey::from_ec_cert_bytes(&bytes::Bytes::copy_from_slice(cert.encode_pem().as_bytes()))
+                }
+                x509_certificate::KeyAlgorithm::Ed25519 => panic!("ed25519 not supported"),
             },
             original: cert,
         }
@@ -177,6 +196,24 @@ impl PublicKey {
 
     pub(crate) fn from_rsa_der(der_bytes: &Bytes) -> PublicKey {
         PublicKey::Rsa(der_bytes.clone())
+    }
+
+    pub(crate) fn from_ec_cert_bytes(cert_bytes: &Bytes) -> PublicKey {
+        // Need to shell out to openssl
+        let mut command = Command::new("openssl")
+            .arg("x509")
+            .arg("-pubkey")
+            .arg("-noout")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        command.stdin.take().unwrap().write_all(cert_bytes).unwrap();
+        let output = command.wait_with_output().unwrap();
+        if !output.status.success() {
+            panic!("openssl failed: {:?}", output);
+        }
+        PublicKey::Ec(output.stdout.into())
     }
 }
 
@@ -485,14 +522,24 @@ impl ClusterCryptoObjectsInternal {
             let mut true_signing_cert: Option<Rc<RefCell<DistributedCert>>> = None;
             if !(**distributed_cert).borrow().certificate.original.subject_is_issuer() {
                 for potential_signing_cert in self.certs.values() {
-                    if (**distributed_cert)
+                    match (**distributed_cert)
                         .borrow()
                         .certificate
                         .original
                         .verify_signed_by_certificate(&(**potential_signing_cert).borrow().certificate.original)
-                        .is_ok()
                     {
-                        true_signing_cert = Some(Rc::clone(potential_signing_cert))
+                        Ok(_) => true_signing_cert = Some(Rc::clone(potential_signing_cert)),
+                        Err(err) => match err {
+                            X509CertificateError::CertificateSignatureVerificationFailed => {}
+                            X509CertificateError::UnsupportedSignatureVerification(..) => {
+                                // This is a hack to get around the fact this lib doesn't support
+                                // all signature algorithms yet.
+                                if openssl_is_signed(potential_signing_cert, distributed_cert) {
+                                    true_signing_cert = Some(Rc::clone(potential_signing_cert));
+                                }
+                            }
+                            _ => panic!("Error verifying signed by certificate: {:?}", err),
+                        },
                     }
                 }
 
@@ -510,10 +557,8 @@ impl ClusterCryptoObjectsInternal {
                 associated_public_key: None,
             }));
 
-            if let Occupied(private_key) = self
-                .public_to_private
-                .entry((**distributed_cert).borrow().certificate.public_key.clone())
-            {
+            let subject_public_key = (**distributed_cert).borrow().certificate.public_key.clone();
+            if let Occupied(private_key) = self.public_to_private.entry(subject_public_key.clone()) {
                 if let Occupied(distributed_private_key) = self.private_keys.entry(private_key.get().clone()) {
                     (*pair).borrow_mut().distributed_private_key = Some(Rc::clone(distributed_private_key.get()));
 
@@ -524,25 +569,15 @@ impl ClusterCryptoObjectsInternal {
                 }
             } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&(**distributed_cert).borrow().certificate.subject) {
                 println!("Known no private key for {}", (**distributed_cert).borrow().certificate.subject);
-            } else if (**distributed_cert).borrow().locations.0.iter().all(|location| match location {
-                Location::Filesystem(file_location) => {
-                    if file_location.file_path.contains("kubernetes.io~configmap") {
-                        // Some certs only appear in zombie pods leftover in kubelet's
-                        // /var/lib/kubelet/pods directory. If a cert is only found in zombie pods
-                        // then it's not a problem that we're missing the private key for it, we
-                        // shouldn't panic about it, it's not a problem with the tool.
-                        true
-                    } else {
-                        false
+            } else {
+                for public_key in self.public_to_private.keys() {
+                    if let PublicKey::Ec(ec_bytes) = public_key {
+                        println!("Public key: {:#?}", ec_bytes);
                     }
                 }
-                _ => false,
-            }) {
-                println!(
-                    "Known no private key found for {} (zombie pod in kubelet filesystem)",
-                    (**distributed_cert).borrow().certificate.subject
-                );
-            } else {
+
+                println!("Public key: {:#?}", subject_public_key);
+
                 panic!(
                     "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}. The cert was found in {}",
                     (**distributed_cert).borrow().certificate.subject,
@@ -622,10 +657,6 @@ impl ClusterCryptoObjectsInternal {
     /// Given a secret taken from etcd, scan it for cryptographic keys and certificates and
     /// record them in the appropriate data structures.
     fn scan_k8s_secret(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
-        if k8s_resource_location.name == "node-system-admin-signer" {
-            println!("Found node-system-admin-signer");
-        }
-
         if let Some(data) = value.as_object().unwrap().get("data") {
             match data {
                 Value::Object(data) => {
@@ -762,10 +793,10 @@ impl ClusterCryptoObjectsInternal {
                 self.process_pem_cert(pem, location);
             }
             "RSA PRIVATE KEY" => {
-                self.process_pem_private_key(pem, location);
+                self.process_pem_rsa_private_key(pem, location);
             }
             "EC PRIVATE KEY" => {
-                println!("Found EC key at {}", location);
+                self.process_pem_ec_private_key(pem, location);
             }
             "PRIVATE KEY" => {
                 panic!("private pkcs8 unsupported at {}", location);
@@ -785,12 +816,39 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    /// Given a private key PEM, record it in the appropriate data structures.
-    fn process_pem_private_key(&mut self, pem: &pem::Pem, location: &Location) {
+    /// Given an RSA private key PEM, record it in the appropriate data structures.
+    fn process_pem_rsa_private_key(&mut self, pem: &pem::Pem, location: &Location) {
         let rsa_private_key = rsa::RsaPrivateKey::from_pkcs1_pem(&pem.to_string()).unwrap();
 
         let private_part = PrivateKey::Rsa(rsa_private_key);
         let public_part = PublicKey::from(&private_part);
+
+        self.register_private_key_public_key_mapping(public_part, &private_part);
+        self.register_private_key(private_part, location);
+    }
+
+    /// Given an EC private key PEM, record it in the appropriate data structures.
+    fn process_pem_ec_private_key(&mut self, pem: &pem::Pem, location: &Location) {
+        // First convert to pkcs#8 by shelling out to openssl pkcs8 -topk8 -nocrypt:
+        let mut command = Command::new("openssl")
+            .arg("pkcs8")
+            .arg("-topk8")
+            .arg("-nocrypt")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        command.stdin.take().unwrap().write_all(pem.to_string().as_bytes()).unwrap();
+
+        let output = command.wait_with_output().unwrap();
+        let pem = pem::parse(output.stdout).unwrap();
+
+        let key = pem.to_string().parse::<SecretKey>().unwrap();
+        let public_key = key.public_key();
+
+        let private_part = PrivateKey::Ec(Bytes::copy_from_slice(pem.contents()));
+        let public_part = PublicKey::Ec(Bytes::copy_from_slice(public_key.to_string().as_bytes()));
 
         self.register_private_key_public_key_mapping(public_part, &private_part);
         self.register_private_key(private_part, location);
@@ -843,9 +901,7 @@ impl ClusterCryptoObjectsInternal {
 
         match hashable_cert.original.key_algorithm().unwrap() {
             x509_certificate::KeyAlgorithm::Rsa => {}
-            x509_certificate::KeyAlgorithm::Ecdsa(_) => {
-                return;
-            }
+            x509_certificate::KeyAlgorithm::Ecdsa(_) => {}
             x509_certificate::KeyAlgorithm::Ed25519 => {
                 return;
             }
@@ -912,7 +968,6 @@ impl ClusterCryptoObjectsInternal {
     /// Read all relevant resources from etcd, scan them for cryptographic objects and record them
     /// in the appropriate data structures.
     async fn process_etcd_resources(&mut self, etcd_client: Arc<Mutex<InMemoryK8sEtcd>>) {
-        println!("Obtaining keys");
         let key_lists = {
             let etcd_client = etcd_client.lock().await;
             [
@@ -1008,6 +1063,29 @@ impl ClusterCryptoObjectsInternal {
     }
 }
 
+/// Shell out to openssl to verify that a certificate is signed by a given signing certificate. We
+/// use this when our certificate lib doesn't support the signature algorithm used by the
+/// certificates.
+fn openssl_is_signed(potential_signing_cert: &Rc<RefCell<DistributedCert>>, distributed_cert: &Rc<RefCell<DistributedCert>>) -> bool {
+    let mut signing_cert_file = tempfile::NamedTempFile::new().unwrap();
+    signing_cert_file
+        .write_all(&(**potential_signing_cert).borrow().certificate.original.encode_pem().as_bytes())
+        .unwrap();
+    let mut signed_cert_file = tempfile::NamedTempFile::new().unwrap();
+    signed_cert_file
+        .write_all(&(**distributed_cert).borrow().certificate.original.encode_pem().as_bytes())
+        .unwrap();
+    let mut openssl_verify_command = Command::new("openssl");
+    openssl_verify_command
+        .arg("verify")
+        .arg("-no_check_time")
+        .arg("-CAfile")
+        .arg(signing_cert_file.path())
+        .arg(signed_cert_file.path());
+    let openssl_verify_output = openssl_verify_command.output().unwrap();
+    openssl_verify_output.status.success()
+}
+
 fn verify_jwt(
     public_key: &PublicKey,
     distributed_jwt: &distributed_jwt::DistributedJwt,
@@ -1015,6 +1093,7 @@ fn verify_jwt(
     match &public_key {
         PublicKey::Rsa(bytes) => jwt_simple::prelude::RS256PublicKey::from_der(bytes).unwrap(),
         PublicKey::Raw(_) => panic!("Raw public keys are not supported"),
+        PublicKey::Ec(_) => return Err(jwt_simple::Error::msg("EC public keys are not supported")),
     }
     .verify_token::<Map<String, Value>>(&distributed_jwt.jwt.str, None)
 }
