@@ -23,19 +23,31 @@ lazy_static! {
         .map(str::to_string)
         .collect();
 
-    // It's okay for some certs to not have a private key, because they are only used for signing a
-    // single cert, and not for signing anything else, so their private key gets thrown away
-    // sometime during installation. For us it just means we still have to recreate them, we just
-    // don't have to record them back to the filesystem or etcd.
+    // It's okay for some certs to not have a private key, as it's used to sign a few certs and
+    // then dropped by its creator. For us it just means we still have to temporarily recreate them
+    // in order to regenerate their signees, we just don't have to record them back to the
+    // filesystem or etcd because they were never there in the first place. These are rare so we
+    // explicitly record them here and any time we encounter a cert without a matching private key
+    // we check if it's in this list and panic if it's not, as it means we might have a bug in our
+    // code.
     pub(crate) static ref KNOWN_MISSING_PRIVATE_KEY_CERTS: HashSet<String> = vec![
+        // This is a self-signed cert trusted by the kube-apiserver and its private key is used to
+        // sign just the admin kubeconfig client cert once and then drops it because there will
+        // always ever be only one admin kubeconfig
         "CN=admin-kubeconfig-signer, OU=openshift",
-        "CN=kubelet-bootstrap-kubeconfig-signer, OU=openshift", // TODO: Verify
-        "CN=root-ca, OU=openshift", // TODO: Verify
+        // TODO: Unknown why it's missing
+        "CN=kubelet-bootstrap-kubeconfig-signer, OU=openshift",
+        // TODO: Unknown why it's missing
+        "CN=root-ca, OU=openshift",
+        // As of OCP 4.14 you can see the private key being dropped here:
+        // https://github.com/operator-framework/operator-lifecycle-manager/blob/9ced412f3e263b8827680dc0ad3477327cd9a508/pkg/controller/install/certresources.go#L295
+        "CN=olm-selfsigned-4f81ca26943a80f2, O=Red Hat, Inc.",
     ]
         .into_iter()
         .map(str::to_string)
         .collect();
 
+    // TODO: Find a better way to identify these rather than maintaining this big list
     pub(crate) static ref EXTERNAL_CERTS: HashSet<String> = vec![
         "undecodable", // Some CA use Teletex encoding for their subject and our x509 lib doesn't like dealing with that
         "CN=GlobalSign, OU=GlobalSign ECC Root CA - R5, O=GlobalSign",

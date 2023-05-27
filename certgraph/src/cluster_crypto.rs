@@ -544,8 +544,7 @@ impl ClusterCryptoObjectsInternal {
                 }
 
                 if true_signing_cert.is_none() {
-                    println!("No signing cert found for {}", (**distributed_cert).borrow().locations);
-                    panic!("No signing cert found");
+                    panic!("No signing cert found for {}", (**distributed_cert).borrow().locations);
                 }
             }
 
