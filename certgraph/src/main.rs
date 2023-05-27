@@ -37,8 +37,8 @@ async fn main() {
 }
 
 async fn main_internal(args: Args) {
-    let (kubelet_dir, static_dir, mut cluster_crypto, memory_etcd) = init(args).await;
-    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubelet_dir, static_dir).await;
+    let (kubelet_dir, kubernetes_dir, mut cluster_crypto, memory_etcd) = init(args).await;
+    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubelet_dir, kubernetes_dir).await;
     finalize(memory_etcd, &mut cluster_crypto).await;
     print_summary(cluster_crypto).await;
 }
@@ -46,21 +46,21 @@ async fn main_internal(args: Args) {
 async fn init(args: Args) -> (PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
     let etcd_client = EtcdClient::connect([args.etcd_endpoint.as_str()], None).await.unwrap();
 
-    let static_resource_dir = args.k8s_static_dir;
+    let kubernetes_dir = args.k8s_static_dir;
     let kubelet_dir = args.kubelet_dir;
     let cluster_crypto = ClusterCryptoObjects::new();
     let in_memory_etcd_client = Arc::new(Mutex::new(InMemoryK8sEtcd::new(etcd_client)));
 
-    (kubelet_dir, static_resource_dir, cluster_crypto, in_memory_etcd_client)
+    (kubelet_dir, kubernetes_dir, cluster_crypto, in_memory_etcd_client)
 }
 
 async fn recertify(
     in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>,
     cluster_crypto: &mut ClusterCryptoObjects,
-    static_resource_dir: PathBuf,
+    kubernetes_dir: PathBuf,
     kubelet_dir: PathBuf,
 ) {
-    collect_crypto_objects(cluster_crypto, &in_memory_etcd_client, kubelet_dir, static_resource_dir).await;
+    collect_crypto_objects(cluster_crypto, &in_memory_etcd_client, kubelet_dir, kubernetes_dir).await;
     establish_relationships(cluster_crypto).await;
     regenerate_cryptographic_objects(&cluster_crypto).await;
 }
@@ -106,14 +106,14 @@ async fn collect_crypto_objects(
     cluster_crypto: &mut ClusterCryptoObjects,
     in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>,
     kubelet_dir: PathBuf,
-    static_resource_dir: PathBuf,
+    kubernetes_dir: PathBuf,
 ) {
     println!("Processing etcd...");
     cluster_crypto.process_etcd_resources(Arc::clone(in_memory_etcd_client)).await;
     println!("Reading kubelet dir...");
     cluster_crypto.process_k8s_static_resources(&kubelet_dir).await;
     println!("Reading kubernetes dir...");
-    cluster_crypto.process_k8s_static_resources(&static_resource_dir).await;
+    cluster_crypto.process_k8s_static_resources(&kubernetes_dir).await;
 }
 
 #[cfg(test)]
