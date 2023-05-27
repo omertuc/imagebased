@@ -248,6 +248,10 @@ impl Display for CertKeyPair {
             write!(f, "-")?;
         }
 
+        if self.num_parents() > 0 {
+            write!(f, " ")?;
+        }
+
         write!(
             f,
             "Cert {:03} locations {}, ",
