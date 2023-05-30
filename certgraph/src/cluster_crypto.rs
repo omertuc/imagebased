@@ -14,6 +14,7 @@ use jwt_simple::prelude::RSAPublicKeyLike;
 use locations::{FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, LocationValueType, YamlLocation};
 use p256::SecretKey;
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use regex::Regex;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 use rsa::RsaPrivateKey;
 use serde_json::{Map, Value};
@@ -589,7 +590,12 @@ impl ClusterCryptoObjectsInternal {
                 } else {
                     panic!("Private key not found");
                 }
-            } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&(**distributed_cert).borrow().certificate.subject) {
+            } else if KNOWN_MISSING_PRIVATE_KEY_CERTS.contains(&(**distributed_cert).borrow().certificate.subject)
+                || KNOWN_MISSING_PRIVATE_KEY_CERTS.iter().any(|known_missing_private_key_cert| {
+                    let re = Regex::new(known_missing_private_key_cert).unwrap();
+                    re.is_match(&(**distributed_cert).borrow().certificate.subject)
+                })
+            {
                 println!("Known no private key for {}", (**distributed_cert).borrow().certificate.subject);
             } else {
                 for public_key in self.public_to_private.keys() {

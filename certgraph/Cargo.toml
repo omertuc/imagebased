@@ -34,3 +34,4 @@ tokio-test = "0.4.2"
 signatory = { version = "0.27.0", features = ["ecdsa", "nistp256"] }
 p256 = "0.13.2"
 tempfile = "3.5.0"
+regex = "1.8.3"
