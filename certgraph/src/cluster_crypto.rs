@@ -216,6 +216,14 @@ impl PublicKey {
         }
         PublicKey::Ec(output.stdout.into())
     }
+
+    fn pem(&self) -> pem::Pem {
+        match &self {
+            PublicKey::Rsa(rsa_der_bytes) => pem::Pem::new("RSA PUBLIC KEY", rsa_der_bytes.as_ref()),
+            PublicKey::Ec(_) => todo!("Unsupported"),
+            PublicKey::Raw(_) => panic!("Unsupported"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,40 +276,6 @@ fn encode_tbs_cert_to_der(tbs_certificate: &rfc5280::TbsCertificate) -> Vec<u8> 
     let mut tbs_der = Vec::<u8>::new();
     tbs_certificate.encode_ref().write_encoded(Mode::Der, &mut tbs_der).unwrap();
     tbs_der
-}
-
-fn encode_resource_data_entry(k8slocation: &YamlLocation, value: &String) -> String {
-    if k8slocation.base64_encoded {
-        STANDARD.encode(value.as_bytes())
-    } else {
-        value.to_string()
-    }
-}
-
-fn decode_resource_data_entry(yaml_location: &YamlLocation, value_at_json_pointer: &mut String) -> String {
-    let decoded = if yaml_location.base64_encoded {
-        String::from_utf8_lossy(STANDARD.decode(value_at_json_pointer.as_bytes()).unwrap().as_slice()).to_string()
-    } else {
-        value_at_json_pointer.to_string()
-    }
-    .clone();
-    decoded
-}
-
-async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) -> Value {
-    serde_yaml::from_str(&String::from_utf8_lossy(
-        &(client.get(k8s_etcd::k8slocation_to_etcd_key(k8slocation)).await),
-    ))
-    .unwrap()
-}
-
-async fn get_filesystem_yaml(file_location: &FileLocation) -> Value {
-    serde_yaml::from_str(
-        file_utils::read_file_to_string(file_location.file_path.clone().into())
-            .await
-            .as_str(),
-    )
-    .expect("failed to parse yaml")
 }
 
 pub(crate) struct ClusterCryptoObjects {
@@ -385,6 +359,14 @@ impl ClusterCryptoObjectsInternal {
 
         for jwt in self.jwts.values() {
             (**jwt).borrow().commit_to_etcd_and_disk(etcd_client).await;
+        }
+
+        for private_key in self.private_keys.values() {
+            (**private_key).borrow().commit_to_etcd_and_disk(etcd_client).await;
+        }
+
+        for public_key in self.public_keys.values() {
+            (**public_key).borrow().commit_to_etcd_and_disk(etcd_client).await;
         }
     }
 
@@ -1036,7 +1018,7 @@ impl ClusterCryptoObjectsInternal {
             Vacant(distributed_public_key_entry) => {
                 distributed_public_key_entry.insert(Rc::new(RefCell::new(distributed_public_key::DistributedPublicKey {
                     locations: Locations(vec![location.clone()].into_iter().collect()),
-                    public_key: rsa_public_key,
+                    key: rsa_public_key,
                 })));
             }
 

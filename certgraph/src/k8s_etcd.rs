@@ -1,6 +1,7 @@
 use crate::cluster_crypto::locations::K8sLocation;
 use etcd_client::{Client as EtcdClient, GetOptions};
 use futures_util::future::join_all;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -136,4 +137,8 @@ async fn run_auger(auger_subcommand: &str, raw_etcd_value: &[u8]) -> Vec<u8> {
     };
 
     result.stdout
+}
+
+pub(crate) async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) -> Value {
+    serde_yaml::from_str(&String::from_utf8_lossy(&(client.get(k8slocation_to_etcd_key(k8slocation)).await))).unwrap()
 }

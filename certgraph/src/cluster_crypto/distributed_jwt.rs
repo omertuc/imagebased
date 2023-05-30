@@ -1,9 +1,11 @@
 use super::{
-    encode_resource_data_entry, get_etcd_yaml,
     locations::{FileLocation, K8sLocation, Location, LocationValueType, Locations},
     verify_jwt, Jwt, JwtSigner, PublicKey,
 };
-use crate::k8s_etcd::InMemoryK8sEtcd;
+use crate::{
+    file_utils::encode_resource_data_entry,
+    k8s_etcd::{get_etcd_yaml, InMemoryK8sEtcd},
+};
 use jwt_simple::prelude::RSAKeyPairLike;
 use serde_json::Value;
 use x509_certificate::InMemorySigningKeyPair;

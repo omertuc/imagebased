@@ -60,12 +60,9 @@ RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-
 ## Reboot
 
 ```bash
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl disable kubelet
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl disable crio
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo reboot 
-
-while true; do
-    ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl stop kubelet
-    ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl stop crio
-done
 ```
 
 ## Run etcd
@@ -100,4 +97,11 @@ ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostK
 ## Copy regenerated kubeconfig back to your machine
 ```bash
 scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10:kubeconfig /home/omer/repos/bootstrap-in-place-poc/sno-workdir/auth/kubeconfig2
+```
+
+## Reboot
+```bash
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl enable kubelet
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo systemctl enable crio
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo reboot 
 ```
