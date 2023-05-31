@@ -612,9 +612,9 @@ impl ClusterCryptoObjectsInternal {
         }
 
         for distributed_private_key in self.private_keys.values() {
-            let cert_pub: PublicKey = (&(**distributed_private_key).borrow().key).into();
+            let private_key: PublicKey = (&(**distributed_private_key).borrow().key).into();
 
-            if let Occupied(public_key_entry) = self.public_keys.entry(cert_pub) {
+            if let Occupied(public_key_entry) = self.public_keys.entry(private_key) {
                 (*distributed_private_key).borrow_mut().associated_distributed_public_key = Some(Rc::clone(public_key_entry.get()));
             }
         }
