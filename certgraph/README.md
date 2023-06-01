@@ -67,8 +67,6 @@ ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostK
 
 ## Run etcd
 
-This sometimes fails when the timing of the reboot-while-stopping-kubelet-and-crio above doesn't work out. You have to reboot
-
 ```bash
 RELEASE_IMAGE=quay.io/openshift-release-dev/ocp-release:4.13.0-x86_64
 ETCD_IMAGE="$(oc adm release extract --from="$RELEASE_IMAGE" --file=image-references | jq '.spec.tags[] | select(.name == "etcd").from.name' -r)"

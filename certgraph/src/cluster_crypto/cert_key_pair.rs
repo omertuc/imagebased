@@ -156,14 +156,14 @@ impl CertKeyPair {
     }
 
     pub(crate) async fn commit_filesystem_cert(&self, filelocation: &FileLocation) {
-        let mut file = tokio::fs::File::open(&filelocation.file_path).await.unwrap();
+        let mut file = tokio::fs::File::open(&filelocation.path).await.unwrap();
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).await.unwrap();
 
         let newpem = pem::parse((*self.distributed_cert).borrow().certificate.original.encode_pem()).unwrap();
 
         tokio::fs::write(
-            &filelocation.file_path,
+            &filelocation.path,
             match &filelocation.content_location {
                 FileContentLocation::Raw(location_value_type) => {
                     if let LocationValueType::Pem(pem_location_info) = &location_value_type {
@@ -201,8 +201,8 @@ impl Display for CertKeyPair {
             f,
             "Cert {:03} locations {}, ",
             (*self.distributed_cert).borrow().locations.0.len(),
-            "<>",
-            // (*self.distributed_cert).borrow().locations,
+            // "<>",
+            (*self.distributed_cert).borrow().locations,
         )?;
         write!(
             f,
@@ -211,8 +211,8 @@ impl Display for CertKeyPair {
                 format!(
                     "priv {:03} locations {}",
                     (**self.distributed_private_key.as_ref().unwrap()).borrow().locations.0.len(),
-                    // (**self.distributed_private_key.as_ref().unwrap()).borrow().locations,
-                    "<>",
+                    (**self.distributed_private_key.as_ref().unwrap()).borrow().locations,
+                    // "<>",
                 )
             } else {
                 "NO PRIV".to_string()

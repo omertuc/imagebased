@@ -28,7 +28,7 @@ pub(crate) async fn read_file_to_string(file_path: PathBuf) -> String {
 }
 
 pub(crate) async fn get_filesystem_yaml(file_location: &FileLocation) -> Value {
-    serde_yaml::from_str(read_file_to_string(file_location.file_path.clone().into()).await.as_str()).expect("failed to parse yaml")
+    serde_yaml::from_str(read_file_to_string(file_location.path.clone().into()).await.as_str()).expect("failed to parse yaml")
 }
 
 pub(crate) fn recreate_yaml_at_location_with_new_pem(mut resource: Value, yaml_location: &YamlLocation, new_pem: &pem::Pem) -> String {

@@ -5,8 +5,8 @@ use lazy_static::lazy_static;
 lazy_static! {
     pub(crate) static ref IGNORE_LIST_CONFIGMAP: HashSet<String> = vec![
         "verifier-public-key-redhat",
-        "service-account-001.pub",
-        "service-account-002.pub",
+        // "service-account-001.pub",
+        // "service-account-002.pub",
         // "ca-bundle.crt"
     ]
         .into_iter()

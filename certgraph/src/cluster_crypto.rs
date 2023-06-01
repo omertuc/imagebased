@@ -131,7 +131,7 @@ impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
-            Self::Rsa(x) => write!(f, "<rsa_pub: {:?}>", x),
+            Self::Rsa(der_bytes) => write!(f, "<rsa_pub: {}>", STANDARD.encode(der_bytes.as_ref())),
             Self::Ec(x) => write!(f, "<ec_pub: {:?}>", x),
         }
     }
@@ -612,9 +612,73 @@ impl ClusterCryptoObjectsInternal {
         }
 
         for distributed_private_key in self.private_keys.values() {
-            let private_key: PublicKey = (&(**distributed_private_key).borrow().key).into();
+            let public_part = PublicKey::from(&(*distributed_private_key).borrow().key);
 
-            if let Occupied(public_key_entry) = self.public_keys.entry(private_key) {
+            let public_part = match public_part {
+                PublicKey::Ec(_ec_bytes) => {
+                    panic!("Unsupported standalone ec private keys");
+                }
+                PublicKey::Rsa(rsa_bytes) => {
+                    // TODO: Temporary hack to match the format of standalone public keys with the
+                    // keys we derive from private keys. Need to figure out how to do it properly
+                    let mut new_rsa_bytes = vec![
+                        0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+                        0x03, 0x82, 0x02, 0x0f, 0x00,
+                    ];
+                    for byte in rsa_bytes.as_ref() {
+                        new_rsa_bytes.push(*byte);
+                    }
+                    PublicKey::Rsa(new_rsa_bytes.into())
+                }
+                PublicKey::Raw(_) => panic!("Unsupported"),
+            };
+
+            println!("Public key: {:#?} {}", public_part, (*distributed_private_key).borrow().locations);
+            for public_key in self.public_keys.values() {
+                println!(
+                    "Public key: {:#?} - {}",
+                    (*public_key).borrow().key,
+                    (*public_key).borrow().locations
+                );
+            }
+
+            if let Occupied(public_key_entry) = self.public_keys.entry(public_part) {
+                (*distributed_private_key).borrow_mut().associated_distributed_public_key = Some(Rc::clone(public_key_entry.get()));
+            }
+        }
+
+        for distributed_private_key in self.private_keys.values() {
+            let public_part = PublicKey::from(&(*distributed_private_key).borrow().key);
+
+            let public_part = match public_part {
+                PublicKey::Ec(_ec_bytes) => {
+                    panic!("Unsupported standalone ec private keys");
+                }
+                PublicKey::Rsa(rsa_bytes) => {
+                    // TODO: Temporary hack to match the format of standalone public keys with the
+                    // keys we derive from private keys. Need to figure out how to do it properly
+                    let mut new_rsa_bytes = vec![
+                        0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+                        0x03, 0x82, 0x01, 0x0f, 0x00,
+                    ];
+                    for byte in rsa_bytes.as_ref() {
+                        new_rsa_bytes.push(*byte);
+                    }
+                    PublicKey::Rsa(new_rsa_bytes.into())
+                }
+                PublicKey::Raw(_) => panic!("Unsupported"),
+            };
+
+            println!("Public key: {:#?} {}", public_part, (*distributed_private_key).borrow().locations);
+            for public_key in self.public_keys.values() {
+                println!(
+                    "Public key: {:#?} - {}",
+                    (*public_key).borrow().key,
+                    (*public_key).borrow().locations
+                );
+            }
+
+            if let Occupied(public_key_entry) = self.public_keys.entry(public_part) {
                 (*distributed_private_key).borrow_mut().associated_distributed_public_key = Some(Rc::clone(public_key_entry.get()));
             }
         }
@@ -918,7 +982,7 @@ impl ClusterCryptoObjectsInternal {
         match self.certs.entry(hashable_cert.clone()) {
             Vacant(distributed_cert) => {
                 if let Location::Filesystem(file_location) = location {
-                    if file_location.file_path.ends_with("kubelet-ca.crt") {
+                    if file_location.path.ends_with("kubelet-ca.crt") {
                         println!("First one {}", hashable_cert.subject.to_string());
                     }
                 }
@@ -973,7 +1037,7 @@ impl ClusterCryptoObjectsInternal {
         self.process_pem_bundle(
             &contents,
             &Location::Filesystem(FileLocation {
-                file_path: pem_file_path.to_string_lossy().to_string(),
+                path: pem_file_path.to_string_lossy().to_string(),
                 content_location: FileContentLocation::Raw(LocationValueType::Unknown),
             }),
         );
@@ -1022,8 +1086,8 @@ impl ClusterCryptoObjectsInternal {
                 })));
             }
 
-            Occupied(distributed_private_key_entry) => {
-                (**distributed_private_key_entry.into_mut())
+            Occupied(distributed_public_key_entry) => {
+                (**distributed_public_key_entry.into_mut())
                     .borrow_mut()
                     .locations
                     .0

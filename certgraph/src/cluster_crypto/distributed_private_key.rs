@@ -32,7 +32,7 @@ impl Display for DistributedPrivateKey {
             // "<>",
         )?;
 
-        if self.signees.len() > 0 {
+        if self.signees.len() > 0 || self.associated_distributed_public_key.is_some() {
             writeln!(f, "")?;
         }
 
@@ -96,11 +96,11 @@ impl DistributedPrivateKey {
         };
 
         tokio::fs::write(
-            &filelocation.file_path,
+            &filelocation.path,
             match &filelocation.content_location {
                 FileContentLocation::Raw(pem_location_info) => match &pem_location_info {
                     LocationValueType::Pem(pem_location_info) => pem_utils::pem_bundle_replace_pem_at_index(
-                        String::from_utf8((read_file_to_string(filelocation.file_path.clone().into()).await).into_bytes()).unwrap(),
+                        String::from_utf8((read_file_to_string(filelocation.path.clone().into()).await).into_bytes()).unwrap(),
                         pem_location_info.pem_bundle_index,
                         &private_key_pem,
                     ),

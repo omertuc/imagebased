@@ -53,7 +53,7 @@ impl Location {
 
     pub fn file_yaml(file_path: &str, prefix: &str, key: &str, base64_encoded: bool) -> Location {
         Location::Filesystem(FileLocation {
-            file_path: file_path.to_string(),
+            path: file_path.to_string(),
             content_location: FileContentLocation::Yaml(YamlLocation {
                 json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
                 value: LocationValueType::Unknown,
@@ -67,7 +67,7 @@ impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Location::K8s(k8s_location) => write!(f, "k8s:{}:{}", k8s_location.resource_location, k8s_location.yaml_location),
-            Location::Filesystem(file_location) => write!(f, "file:{}:{}", file_location.file_path, file_location.content_location),
+            Location::Filesystem(file_location) => write!(f, "file:{}:{}", file_location.path, file_location.content_location),
         }
     }
 }
@@ -159,7 +159,7 @@ impl std::fmt::Display for PemLocationInfo {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct FileLocation {
-    pub(crate) file_path: String,
+    pub(crate) path: String,
     pub(crate) content_location: FileContentLocation,
 }
 
