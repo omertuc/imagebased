@@ -1,7 +1,7 @@
-use rsa::RsaPrivateKey;
 use rsa::{
     self,
     pkcs8::{DecodePrivateKey, EncodePrivateKey},
+    RsaPrivateKey,
 };
 use x509_certificate::InMemorySigningKeyPair;
 

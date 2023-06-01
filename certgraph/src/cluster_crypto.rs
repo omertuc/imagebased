@@ -13,10 +13,10 @@ use futures_util::future::join_all;
 use jwt_simple::prelude::RSAPublicKeyLike;
 use locations::{FileContentLocation, FileLocation, K8sLocation, K8sResourceLocation, Location, LocationValueType, YamlLocation};
 use p256::SecretKey;
-use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
 use regex::Regex;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
-use rsa::RsaPrivateKey;
+use rsa::{pkcs8::EncodePublicKey, RsaPrivateKey};
 use serde_json::{Map, Value};
 use std::{
     cell::RefCell,
@@ -104,14 +104,13 @@ impl PrivateKey {
 pub(crate) enum PublicKey {
     Rsa(Bytes),
     Ec(Bytes),
-    Raw(Bytes),
 }
 
 impl From<&PrivateKey> for PublicKey {
     fn from(priv_key: &PrivateKey) -> Self {
         match priv_key {
-            PrivateKey::Rsa(private_key) => PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(
-                private_key.to_public_key().to_pkcs1_der().unwrap().as_bytes(),
+            PrivateKey::Rsa(private_key) => PublicKey::from_rsa_bytes(&bytes::Bytes::copy_from_slice(
+                private_key.to_public_key().to_public_key_der().unwrap().as_bytes(),
             )),
             PrivateKey::Ec(ec_bytes) => {
                 let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, ec_bytes).unwrap();
@@ -123,14 +122,13 @@ impl From<&PrivateKey> for PublicKey {
 
 impl From<Bytes> for PublicKey {
     fn from(value: Bytes) -> Self {
-        PublicKey::from_bytes(&value)
+        PublicKey::from_rsa_bytes(&value)
     }
 }
 
 impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Raw(x) => write!(f, "<raw_pub: {:?}>", x),
             Self::Rsa(der_bytes) => write!(f, "<rsa_pub: {}>", STANDARD.encode(der_bytes.as_ref())),
             Self::Ec(x) => write!(f, "<ec_pub: {:?}>", x),
         }
@@ -177,8 +175,8 @@ impl From<CapturedX509Certificate> for Certificate {
                 return "undecodable".to_string();
             }),
             public_key: match cert.key_algorithm().unwrap() {
-                x509_certificate::KeyAlgorithm::Rsa => PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(
-                    &bytes::Bytes::copy_from_slice(&cert.public_key_data()),
+                x509_certificate::KeyAlgorithm::Rsa => PublicKey::from_rsa_bytes(&bytes::Bytes::copy_from_slice(
+                    &bytes::Bytes::copy_from_slice(&cert.to_public_key_der().unwrap().as_bytes()),
                 )),
                 x509_certificate::KeyAlgorithm::Ecdsa(_) => {
                     PublicKey::from_ec_cert_bytes(&bytes::Bytes::copy_from_slice(cert.encode_pem().as_bytes()))
@@ -191,11 +189,7 @@ impl From<CapturedX509Certificate> for Certificate {
 }
 
 impl PublicKey {
-    pub(crate) fn from_bytes(bytes: &Bytes) -> PublicKey {
-        PublicKey::Raw(bytes.clone())
-    }
-
-    pub(crate) fn from_rsa_der(der_bytes: &Bytes) -> PublicKey {
+    pub(crate) fn from_rsa_bytes(der_bytes: &Bytes) -> PublicKey {
         PublicKey::Rsa(der_bytes.clone())
     }
 
@@ -221,7 +215,6 @@ impl PublicKey {
         match &self {
             PublicKey::Rsa(rsa_der_bytes) => pem::Pem::new("RSA PUBLIC KEY", rsa_der_bytes.as_ref()),
             PublicKey::Ec(_) => todo!("Unsupported"),
-            PublicKey::Raw(_) => panic!("Unsupported"),
         }
     }
 }
@@ -370,10 +363,10 @@ impl ClusterCryptoObjectsInternal {
         }
     }
 
-    /// Recursively regenerate all the crypto objects. This is done by regenerating the top
-    /// level cert-key pairs and private keys, which will in turn regenerate all the objects
-    /// that depend on them. Requires that the crypto objects have been paired and associated
-    /// through the other methods.
+    /// Recursively regenerate all the crypto objects. This is done by regenerating the top level
+    /// cert-key pairs and standalone private keys, which will in turn regenerate all the objects
+    /// that depend on them (signees). Requires that first the crypto objects have been paired and
+    /// associated through the other methods.
     fn regenerate_crypto(&mut self) {
         for cert_key_pair in &self.cert_key_pairs {
             if (**cert_key_pair).borrow().signer.is_some() {
@@ -580,12 +573,6 @@ impl ClusterCryptoObjectsInternal {
             {
                 println!("Known no private key for {}", (**distributed_cert).borrow().certificate.subject);
             } else {
-                for public_key in self.public_to_private.keys() {
-                    if let PublicKey::Ec(ec_bytes) = public_key {
-                        println!("Public key: {:#?}", ec_bytes);
-                    }
-                }
-
                 panic!(
                     "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}. The cert was found in {}",
                     (**distributed_cert).borrow().certificate.subject,
@@ -613,70 +600,6 @@ impl ClusterCryptoObjectsInternal {
 
         for distributed_private_key in self.private_keys.values() {
             let public_part = PublicKey::from(&(*distributed_private_key).borrow().key);
-
-            let public_part = match public_part {
-                PublicKey::Ec(_ec_bytes) => {
-                    panic!("Unsupported standalone ec private keys");
-                }
-                PublicKey::Rsa(rsa_bytes) => {
-                    // TODO: Temporary hack to match the format of standalone public keys with the
-                    // keys we derive from private keys. Need to figure out how to do it properly
-                    let mut new_rsa_bytes = vec![
-                        0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
-                        0x03, 0x82, 0x02, 0x0f, 0x00,
-                    ];
-                    for byte in rsa_bytes.as_ref() {
-                        new_rsa_bytes.push(*byte);
-                    }
-                    PublicKey::Rsa(new_rsa_bytes.into())
-                }
-                PublicKey::Raw(_) => panic!("Unsupported"),
-            };
-
-            println!("Public key: {:#?} {}", public_part, (*distributed_private_key).borrow().locations);
-            for public_key in self.public_keys.values() {
-                println!(
-                    "Public key: {:#?} - {}",
-                    (*public_key).borrow().key,
-                    (*public_key).borrow().locations
-                );
-            }
-
-            if let Occupied(public_key_entry) = self.public_keys.entry(public_part) {
-                (*distributed_private_key).borrow_mut().associated_distributed_public_key = Some(Rc::clone(public_key_entry.get()));
-            }
-        }
-
-        for distributed_private_key in self.private_keys.values() {
-            let public_part = PublicKey::from(&(*distributed_private_key).borrow().key);
-
-            let public_part = match public_part {
-                PublicKey::Ec(_ec_bytes) => {
-                    panic!("Unsupported standalone ec private keys");
-                }
-                PublicKey::Rsa(rsa_bytes) => {
-                    // TODO: Temporary hack to match the format of standalone public keys with the
-                    // keys we derive from private keys. Need to figure out how to do it properly
-                    let mut new_rsa_bytes = vec![
-                        0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
-                        0x03, 0x82, 0x01, 0x0f, 0x00,
-                    ];
-                    for byte in rsa_bytes.as_ref() {
-                        new_rsa_bytes.push(*byte);
-                    }
-                    PublicKey::Rsa(new_rsa_bytes.into())
-                }
-                PublicKey::Raw(_) => panic!("Unsupported"),
-            };
-
-            println!("Public key: {:#?} {}", public_part, (*distributed_private_key).borrow().locations);
-            for public_key in self.public_keys.values() {
-                println!(
-                    "Public key: {:#?} - {}",
-                    (*public_key).borrow().key,
-                    (*public_key).borrow().locations
-                );
-            }
 
             if let Occupied(public_key_entry) = self.public_keys.entry(public_part) {
                 (*distributed_private_key).borrow_mut().associated_distributed_public_key = Some(Rc::clone(public_key_entry.get()));
@@ -1076,7 +999,7 @@ impl ClusterCryptoObjectsInternal {
     }
 
     fn process_pem_public_key(&mut self, pem: &pem::Pem, location: &Location) {
-        let rsa_public_key = PublicKey::from_rsa_der(&bytes::Bytes::copy_from_slice(pem.contents()));
+        let rsa_public_key = PublicKey::from_rsa_bytes(&bytes::Bytes::copy_from_slice(pem.contents()));
 
         match self.public_keys.entry(rsa_public_key.clone()) {
             Vacant(distributed_public_key_entry) => {
@@ -1187,7 +1110,6 @@ fn verify_jwt(
 ) -> Result<jwt_simple::prelude::JWTClaims<Map<String, Value>>, jwt_simple::Error> {
     match &public_key {
         PublicKey::Rsa(bytes) => jwt_simple::prelude::RS256PublicKey::from_der(bytes).unwrap(),
-        PublicKey::Raw(_) => panic!("Raw public keys are not supported"),
         PublicKey::Ec(_) => return Err(jwt_simple::Error::msg("EC public keys are not supported")),
     }
     .verify_token::<Map<String, Value>>(&distributed_jwt.jwt.str, None)

@@ -58,7 +58,6 @@ impl DistributedPublicKey {
         let public_key_pem = match &self.key {
             PublicKey::Rsa(public_key_bytes) => pem::Pem::new("RSA PUBLIC KEY", public_key_bytes.as_ref()),
             PublicKey::Ec(_) => panic!("unsupported"),
-            PublicKey::Raw(_) => panic!("Unsupported"),
         };
 
         tokio::fs::write(
