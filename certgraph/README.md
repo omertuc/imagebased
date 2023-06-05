@@ -17,7 +17,7 @@ will be valid for the correct CN/SAN.
 
 * qemu-nbd
 * podman 
-* [auger](https://github.com/jpbetz/auger)
+* [ouger](https://github.com/omertuc/ouger)
 
 ### Script
 
@@ -78,10 +78,10 @@ ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostK
 ```bash
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo mkdir -p /root/.local/bin
 scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/imagebased/certgraph/target/x86_64-unknown-linux-gnu/release/certgraph core@192.168.126.10:certgraph
-scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/auger/auger core@192.168.126.10:
+scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/ouger/ouger core@192.168.126.10:
 scp -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no /home/omer/repos/bootstrap-in-place-poc/sno-workdir/auth/kubeconfig core@192.168.126.10:
 
-ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/auger /root/.local/bin/
+ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/ouger /root/.local/bin/
 ssh -o IdentityFile=./ssh-key/key -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no core@192.168.126.10 sudo cp /home/core/certgraph /root/.local/bin/
 ```
 

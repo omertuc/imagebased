@@ -1,6 +1,6 @@
 use crate::{
     file_utils::{self, read_file_to_string},
-    k8s_etcd::{self, InMemoryK8sEtcd},
+    k8s_etcd::{self, EtcdResult, InMemoryK8sEtcd},
     rules::{self, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS},
 };
 use base64::{
@@ -37,8 +37,11 @@ use tokio::sync::Mutex;
 use x509_certificate::{rfc5280, CapturedX509Certificate, InMemorySigningKeyPair, X509CertificateError};
 
 use self::{
-    cert_key_pair::CertKeyPair, distributed_jwt::DistributedJwt, distributed_private_key::DistributedPrivateKey,
-    distributed_public_key::DistributedPublicKey, locations::Locations,
+    cert_key_pair::CertKeyPair,
+    distributed_jwt::DistributedJwt,
+    distributed_private_key::DistributedPrivateKey,
+    distributed_public_key::DistributedPublicKey,
+    locations::{FieldEncoding, Locations},
 };
 
 pub(crate) mod cert_key_pair;
@@ -574,7 +577,7 @@ impl ClusterCryptoObjectsInternal {
                 println!("Known no private key for {}", (**distributed_cert).borrow().certificate.subject);
             } else {
                 panic!(
-                    "Private key not found for key not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}. The cert was found in {}",
+                    "Private key not found for cert not in KNOWN_MISSING_PRIVATE_KEY_CERTS, cannot continue, {}. The cert was found in {}",
                     (**distributed_cert).borrow().certificate.subject,
                     (**distributed_cert).borrow().locations,
                 );
@@ -610,12 +613,19 @@ impl ClusterCryptoObjectsInternal {
     /// Given an etcd key (not cryptographic key, just key as in key-value) and its contents, scan
     /// it for cryptographic keys and certificates and record them in the appropriate data
     /// structures.
-    async fn process_etcd_key(&mut self, contents: Vec<u8>) {
-        let value: &Value = &serde_yaml::from_slice(contents.as_slice()).expect("failed to parse yaml");
+    async fn process_etcd_result(&mut self, etcd_result: EtcdResult) {
+        let value: &Value = &serde_yaml::from_slice(etcd_result.value.as_slice()).expect("failed to parse yaml");
         let location = K8sResourceLocation::from(value);
+
+        // Ensure our as_etcd_key function generates the expected key, while we still have the key
+        assert_eq!(etcd_result.key, location.as_etcd_key());
+
         match location.kind.as_str() {
             "Secret" => self.scan_k8s_secret(value, &location),
             "ConfigMap" => self.scan_k8s_configmap(value, &location),
+            "ValidatingWebhookConfiguration" => self.scan_k8s_validatingwebhookconfiguration(value, &location),
+            "APIService" => self.scan_k8s_apiservice(value, &location),
+            "MachineConfig" => self.scan_k8s_machineconfig(value, &location),
             _ => {}
         }
     }
@@ -636,7 +646,7 @@ impl ClusterCryptoObjectsInternal {
                                 yaml_location: YamlLocation {
                                     json_pointer: format!("/data/{key}"),
                                     value: LocationValueType::Unknown,
-                                    base64_encoded: false,
+                                    encoding: FieldEncoding::None,
                                 },
                             });
 
@@ -645,6 +655,101 @@ impl ClusterCryptoObjectsInternal {
                     }
                 }
                 _ => todo!(),
+            }
+        }
+    }
+
+    /// Given a ValidatingWebhookConfiguration taken from etcd, scan it for cryptographic keys and
+    /// certificates and record them in the appropriate data structures.
+    fn scan_k8s_validatingwebhookconfiguration(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+        if let Some(webhooks) = value.as_object().unwrap().get("webhooks") {
+            match webhooks {
+                Value::Array(webhooks) => {
+                    for (webhook_index, webhook_value) in webhooks.iter().enumerate() {
+                        match webhook_value {
+                            Value::Object(webhook) => {
+                                if let Some(client_config) = webhook.get("clientConfig") {
+                                    match client_config {
+                                        Value::Object(client_config) => {
+                                            if let Some(ca_bundle) = client_config.get("caBundle") {
+                                                let location = &Location::K8s(K8sLocation {
+                                                    resource_location: k8s_resource_location.clone(),
+                                                    yaml_location: YamlLocation {
+                                                        json_pointer: format!("/webhooks/{webhook_index}/clientConfig/caBundle"),
+                                                        value: LocationValueType::Unknown,
+                                                        encoding: FieldEncoding::None,
+                                                    },
+                                                });
+
+                                                self.process_base64_value(ca_bundle, location);
+                                            }
+                                        }
+                                        _ => todo!(),
+                                    }
+                                }
+                            }
+                            _ => todo!(),
+                        }
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+    }
+
+    /// Given an APIService taken from etcd, scan it for cryptographic keys and certificates and
+    /// record them in the appropriate data structures.
+    fn scan_k8s_apiservice(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+        if let Some(spec_object) = value.as_object().unwrap().get("spec") {
+            match spec_object {
+                Value::Object(spec) => {
+                    if let Some(ca_bundle) = spec.get("caBundle") {
+                        let location = &Location::K8s(K8sLocation {
+                            resource_location: k8s_resource_location.clone(),
+                            yaml_location: YamlLocation {
+                                json_pointer: format!("/spec/caBundle"),
+                                value: LocationValueType::Unknown,
+                                encoding: FieldEncoding::Base64,
+                            },
+                        });
+
+                        self.process_base64_value(ca_bundle, location);
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+    }
+
+    /// Given a MachineConfig taken from etcd, scan it for cryptographic keys and certificates and
+    /// record them in the appropriate data structures.
+    fn scan_k8s_machineconfig(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
+        if let Some(Value::Object(spec)) = value.as_object().unwrap().get("spec") {
+            if let Some(Value::Object(config)) = spec.get("config") {
+                if let Some(Value::Object(storage)) = config.get("storage") {
+                    if let Some(Value::Array(files)) = storage.get("files") {
+                        for (file_index, file) in files.iter().enumerate() {
+                            if let Value::Object(file) = file {
+                                if let Some(Value::String(path)) = file.get("path") {
+                                    if path.ends_with(".pem") || path.ends_with(".crt") {
+                                        if let Some(contents) = file.get("contents") {
+                                            let location = &Location::K8s(K8sLocation {
+                                                resource_location: k8s_resource_location.clone(),
+                                                yaml_location: YamlLocation {
+                                                    json_pointer: format!("/spec/config/storage/files/{file_index}/contents"),
+                                                    value: LocationValueType::Unknown,
+                                                    encoding: FieldEncoding::DataUrl,
+                                                },
+                                            });
+
+                                            self.process_data_url_value(contents, location);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -660,7 +765,10 @@ impl ClusterCryptoObjectsInternal {
                             continue;
                         }
 
-                        self.process_base64_value(value, &Location::k8s(k8s_resource_location.clone(), "/data", key, true));
+                        self.process_base64_value(
+                            value,
+                            &Location::k8s(k8s_resource_location.clone(), "/data", key, FieldEncoding::Base64),
+                        );
                     }
                 }
                 _ => todo!(),
@@ -676,7 +784,7 @@ impl ClusterCryptoObjectsInternal {
                                 for (key, value) in annotations.iter() {
                                     self.process_unknown_yaml_value(
                                         value.to_string(),
-                                        &Location::k8s(k8s_resource_location.clone(), "/metadata/annotations", key, false),
+                                        &Location::k8s(k8s_resource_location.clone(), "/metadata/annotations", key, FieldEncoding::None),
                                     );
                                 }
                             }
@@ -685,6 +793,24 @@ impl ClusterCryptoObjectsInternal {
                     }
                 }
                 _ => todo!(),
+            }
+        }
+    }
+
+    /// Given a data-url-encoded value taken from a YAML field, decode it and scan it for
+    /// cryptographic keys and certificates and record them in the appropriate data structures.
+    fn process_data_url_value(&mut self, value: &Value, location: &Location) {
+        if let Value::String(string_value) = value {
+            if let Ok(url) = data_url::DataUrl::process(string_value) {
+                let (decoded, _fragment) = url.decode_to_vec().unwrap();
+                if let Ok(decoded) = String::from_utf8(decoded) {
+                    self.process_unknown_yaml_value(decoded, location);
+                } else {
+                    // We don't search for crypto objects inside binaries
+                    return;
+                }
+            } else {
+                panic!("Failed to decode data-url");
             }
         }
     }
@@ -904,12 +1030,6 @@ impl ClusterCryptoObjectsInternal {
 
         match self.certs.entry(hashable_cert.clone()) {
             Vacant(distributed_cert) => {
-                if let Location::Filesystem(file_location) = location {
-                    if file_location.path.ends_with("kubelet-ca.crt") {
-                        println!("First one {}", hashable_cert.subject.to_string());
-                    }
-                }
-
                 distributed_cert.insert(Rc::new(RefCell::new(DistributedCert {
                     certificate: hashable_cert,
                     locations: Locations(vec![location.clone()].into_iter().collect()),
@@ -974,6 +1094,8 @@ impl ClusterCryptoObjectsInternal {
             [
                 &(etcd_client.list_keys("secrets").await),
                 &(etcd_client.list_keys("configmaps").await),
+                &(etcd_client.list_keys("validatingwebhookconfigurations").await),
+                &(etcd_client.list_keys("apiregistration.k8s.io/apiservices").await),
             ]
         };
 
@@ -994,7 +1116,7 @@ impl ClusterCryptoObjectsInternal {
 
         println!("Processing etcd resources...");
         for contents in join_results {
-            self.process_etcd_key(contents.unwrap()).await;
+            self.process_etcd_result(contents.unwrap()).await;
         }
     }
 
@@ -1035,7 +1157,7 @@ impl ClusterCryptoObjectsInternal {
                             yaml_path.to_string_lossy().to_string().as_str(),
                             &format!("/users/{}/user", i),
                             user_field,
-                            true,
+                            FieldEncoding::Base64,
                         ),
                     );
                 }
@@ -1054,7 +1176,7 @@ impl ClusterCryptoObjectsInternal {
                         yaml_path.to_string_lossy().to_string().as_str(),
                         &format!("/clusters/{}/cluster", i),
                         "certificate-authority-data",
-                        true,
+                        FieldEncoding::Base64,
                     ),
                 );
             }

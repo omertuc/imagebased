@@ -40,24 +40,24 @@ pub(crate) enum Location {
 }
 
 impl Location {
-    pub fn k8s(k8s_resource_location: K8sResourceLocation, prefix: &str, key: &str, base64_encoded: bool) -> Location {
+    pub fn k8s(k8s_resource_location: K8sResourceLocation, prefix: &str, key: &str, encoding: FieldEncoding) -> Location {
         Location::K8s(K8sLocation {
             resource_location: k8s_resource_location.clone(),
             yaml_location: YamlLocation {
                 json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
                 value: LocationValueType::Unknown,
-                base64_encoded,
+                encoding,
             },
         })
     }
 
-    pub fn file_yaml(file_path: &str, prefix: &str, key: &str, base64_encoded: bool) -> Location {
+    pub fn file_yaml(file_path: &str, prefix: &str, key: &str, encoding: FieldEncoding) -> Location {
         Location::Filesystem(FileLocation {
             path: file_path.to_string(),
             content_location: FileContentLocation::Yaml(YamlLocation {
                 json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
                 value: LocationValueType::Unknown,
-                base64_encoded,
+                encoding,
             }),
         })
     }
@@ -196,10 +196,17 @@ impl std::fmt::Display for LocationValueType {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) enum FieldEncoding {
+    None,
+    Base64,
+    DataUrl,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct YamlLocation {
     pub(crate) json_pointer: String,
     pub(crate) value: LocationValueType,
-    pub(crate) base64_encoded: bool,
+    pub(crate) encoding: FieldEncoding,
 }
 
 impl std::fmt::Display for YamlLocation {
@@ -210,8 +217,9 @@ impl std::fmt::Display for YamlLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct K8sResourceLocation {
-    pub(crate) namespace: String,
+    pub(crate) namespace: Option<String>,
     pub(crate) kind: String,
+    pub(crate) apiversion: String,
     pub(crate) name: String,
 }
 
@@ -219,8 +227,10 @@ impl From<&Value> for K8sResourceLocation {
     fn from(value: &Value) -> Self {
         Self {
             namespace: json_tools::read_metadata_string_field(value, "namespace"),
-            kind: json_tools::read_string_field(value, "kind"),
-            name: json_tools::read_metadata_string_field(value, "name"),
+            kind: json_tools::read_string_field(value, "kind").unwrap(),
+            name: json_tools::read_metadata_string_field(value, "name").unwrap(),
+            apiversion: json_tools::read_string_field(value, "apiVersion")
+                .expect(format!("Missing apiversion field in {}", value).as_str()),
         }
     }
 }
@@ -235,7 +245,13 @@ impl std::hash::Hash for K8sResourceLocation {
 
 impl std::fmt::Display for K8sResourceLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}:{}", self.kind, self.namespace, self.name)
+        write!(
+            f,
+            "{}/{}:{}",
+            self.kind,
+            self.namespace.clone().unwrap_or("cluster-scoped".to_string()),
+            self.name
+        )
     }
 }
 
@@ -245,13 +261,27 @@ pub(crate) struct K8sLocation {
     pub(crate) yaml_location: YamlLocation,
 }
 
-impl K8sLocation {
+impl K8sResourceLocation {
     pub(crate) fn as_etcd_key(&self) -> String {
+        let apiversion_first_component = self.apiversion.as_str().split('/').next();
+
         format!(
-            "/kubernetes.io/{}s/{}/{}",
-            self.resource_location.kind.to_lowercase(),
-            self.resource_location.namespace,
-            self.resource_location.name,
+            "/kubernetes.io/{}{}s/{}{}",
+            match apiversion_first_component {
+                Some(apiversion_first_component_value) => {
+                    match apiversion_first_component_value {
+                        "apiregistration.k8s.io" => format!("{}/", apiversion_first_component_value),
+                        _ => "".to_string(),
+                    }
+                }
+                None => "".to_string(),
+            },
+            self.kind.to_lowercase(),
+            match self.namespace {
+                Some(_) => format!("{}/", self.namespace.as_ref().unwrap()),
+                None => "".to_string(),
+            },
+            self.name,
         )
     }
 }

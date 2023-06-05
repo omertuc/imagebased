@@ -58,18 +58,35 @@ pub(crate) fn recreate_yaml_at_location_with_new_pem(mut resource: Value, yaml_l
 }
 
 pub(crate) fn encode_resource_data_entry(k8slocation: &YamlLocation, value: &String) -> String {
-    if k8slocation.base64_encoded {
-        STANDARD.encode(value.as_bytes())
-    } else {
-        value.to_string()
+    match k8slocation.encoding {
+        crate::cluster_crypto::locations::FieldEncoding::None => value.to_string(),
+        crate::cluster_crypto::locations::FieldEncoding::Base64 => STANDARD.encode(value.as_bytes()),
+        crate::cluster_crypto::locations::FieldEncoding::DataUrl => {
+            let mut url = dataurl::DataUrl::new();
+            url.set_data(value.as_bytes());
+            url.to_string()
+        }
     }
 }
 
 pub(crate) fn decode_resource_data_entry(yaml_location: &YamlLocation, value_at_json_pointer: &mut String) -> String {
-    let decoded = if yaml_location.base64_encoded {
-        String::from_utf8_lossy(STANDARD.decode(value_at_json_pointer.as_bytes()).unwrap().as_slice()).to_string()
-    } else {
-        value_at_json_pointer.to_string()
+    let decoded = match yaml_location.encoding {
+        crate::cluster_crypto::locations::FieldEncoding::None => value_at_json_pointer.to_string(),
+        crate::cluster_crypto::locations::FieldEncoding::Base64 => {
+            String::from_utf8_lossy(STANDARD.decode(value_at_json_pointer.as_bytes()).unwrap().as_slice()).to_string()
+        }
+        crate::cluster_crypto::locations::FieldEncoding::DataUrl => {
+            if let Ok(url) = data_url::DataUrl::process(value_at_json_pointer) {
+                let (decoded, _fragment) = url.decode_to_vec().unwrap();
+                if let Ok(decoded) = String::from_utf8(decoded) {
+                    decoded
+                } else {
+                    panic!("Failed to decode data-url");
+                }
+            } else {
+                panic!("Failed to decode data-url");
+            }
+        }
     }
     .clone();
     decoded

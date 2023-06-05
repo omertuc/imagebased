@@ -137,7 +137,7 @@ impl CertKeyPair {
 
         etcd_client
             .put(
-                &k8slocation.as_etcd_key(),
+                &k8slocation.resource_location.as_etcd_key(),
                 recreate_yaml_at_location_with_new_pem(
                     resource,
                     &k8slocation.yaml_location,
