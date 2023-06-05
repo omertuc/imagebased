@@ -382,6 +382,102 @@ impl ClusterCryptoObjectsInternal {
         for private_key in self.private_keys.values() {
             (**private_key).borrow_mut().regenerate()
         }
+
+        println!("Making sure everything was regenerated...");
+        self.assert_regeneration();
+    }
+
+    fn assert_regeneration(&mut self) {
+        // Assert all known objects have been regenerated.
+        for cert_key_pair in &self.cert_key_pairs {
+            let signer = &(*(**cert_key_pair).borrow()).signer;
+            if let Some(signer) = signer {
+                assert!(
+                    (**signer).borrow().regenerated,
+                    "Didn't seem to regenerate signer with cert at {} and keys at {} while I'm at {} with keys at {}",
+                    (*(**signer).borrow().distributed_cert).borrow().locations,
+                    if let Some(key) = &(**signer).borrow().distributed_private_key {
+                        format!("{}", (*key).borrow().locations)
+                    } else {
+                        "None".to_string()
+                    },
+                    (*(**cert_key_pair).borrow().distributed_cert).borrow().locations,
+                    if let Some(key) = &(**cert_key_pair).borrow().distributed_private_key {
+                        format!("{}", (*key).borrow().locations)
+                    } else {
+                        "None".to_string()
+                    },
+                );
+
+                assert!(
+                    (**signer).borrow().signees.len() > 0,
+                    "Zero signees signer with cert at {} and keys at {}",
+                    (*(**signer).borrow().distributed_cert).borrow().locations,
+                    if let Some(key) = &(**signer).borrow().distributed_private_key {
+                        format!("{}", (*key).borrow().locations)
+                    } else {
+                        "None".to_string()
+                    },
+                );
+
+                for signee in &(**signer).borrow().signees {
+                    match signee {
+                        Signee::CertKeyPair(pair) => {
+                            assert!(
+                                (**pair).borrow().regenerated,
+                                "Didn't seem to regenerate cert-key pair {} signee of {}",
+                                (**pair).borrow(),
+                                (**signer).borrow(),
+                            );
+                        }
+                        Signee::Jwt(jwt) => {
+                            assert!(
+                                (**jwt).borrow().regenerated,
+                                "Didn't seem to regenerate jwt {:#?} signee of {}",
+                                (**jwt).borrow(),
+                                (**signer).borrow(),
+                            );
+                        }
+                    }
+                }
+
+                // Assert our cert-key pair is in the signees of the signer.
+                assert!(
+                    (**signer).borrow().signees.contains(&Signee::CertKeyPair(cert_key_pair.clone())),
+                    "Signer {} doesn't have cert-key pair {} as a signee",
+                    (**signer).borrow(),
+                    (**cert_key_pair).borrow(),
+                );
+            }
+
+            assert!(
+                (**cert_key_pair).borrow().regenerated,
+                "Didn't seem to regenerate cert at {}",
+                (*(**cert_key_pair).borrow().distributed_cert).borrow().locations,
+            );
+        }
+        for distributed_public_key in self.public_keys.values() {
+            assert!(
+                (*distributed_public_key).borrow().regenerated,
+                "Didn't seem to regenerate public key {}",
+                (**distributed_public_key).borrow(),
+            );
+        }
+        for distributed_jwt in self.jwts.values() {
+            assert!(
+                (*distributed_jwt).borrow().regenerated,
+                "Didn't seem to regenerate jwt {:#?}",
+                (*distributed_jwt).borrow(),
+            );
+        }
+        for distributed_private_key in self.private_keys.values() {
+            assert!(
+                (*distributed_private_key).borrow().regenerated,
+                "Didn't seem to regenerate private key {}",
+                (*distributed_private_key).borrow(),
+            );
+        }
+        assert_eq!(self.certs.len(), 0);
     }
 
     fn fill_cert_key_signers(&mut self) {
@@ -549,13 +645,15 @@ impl ClusterCryptoObjectsInternal {
     /// a cert-key pair. Also remove the private key from the list of private keys as it is now
     /// part of a cert-key pair, the remaining private keys are considered standalone.
     fn pair_certs_and_keys(&mut self) {
-        for (_hashable_cert, distributed_cert) in &self.certs {
+        let mut paired_cers_to_remove = vec![];
+        for (hashable_cert, distributed_cert) in &self.certs {
             let pair = Rc::new(RefCell::new(cert_key_pair::CertKeyPair {
                 distributed_private_key: None,
                 distributed_cert: Rc::clone(distributed_cert),
                 signer: None,
                 signees: Vec::new(),
                 associated_public_key: None,
+                regenerated: false,
             }));
 
             let subject_public_key = (**distributed_cert).borrow().certificate.public_key.clone();
@@ -583,7 +681,12 @@ impl ClusterCryptoObjectsInternal {
                 );
             }
 
+            paired_cers_to_remove.push(hashable_cert.clone());
             self.cert_key_pairs.push(pair);
+        }
+
+        for paired_cer_to_remove in paired_cers_to_remove {
+            self.certs.remove(&paired_cer_to_remove);
         }
     }
 
@@ -865,6 +968,7 @@ impl ClusterCryptoObjectsInternal {
                     jwt,
                     locations: Locations(vec![location].into_iter().collect()),
                     signer: JwtSigner::Unknown,
+                    regenerated: false,
                 })));
             }
             Occupied(distributed_jwt) => {
@@ -979,6 +1083,7 @@ impl ClusterCryptoObjectsInternal {
                     // this field is for actual public keys that we find in the wild, not ones we
                     // generate ourselves.
                     associated_distributed_public_key: None,
+                    regenerated: false,
                 })));
             }
 
@@ -1116,6 +1221,7 @@ impl ClusterCryptoObjectsInternal {
                 distributed_public_key_entry.insert(Rc::new(RefCell::new(distributed_public_key::DistributedPublicKey {
                     locations: Locations(vec![location.clone()].into_iter().collect()),
                     key: rsa_public_key,
+                    regenerated: false,
                 })));
             }
 
@@ -1178,6 +1284,18 @@ impl ClusterCryptoObjectsInternal {
 /// use this when our certificate lib doesn't support the signature algorithm used by the
 /// certificates.
 fn openssl_is_signed(potential_signer: &Rc<RefCell<CertKeyPair>>, signee: &Rc<RefCell<CertKeyPair>>) -> bool {
+    // TODO: This condition is a hack. We should trust the openssl command we run further down to
+    // tell us this, but we don't because currently the way this openssl command works, if you pass
+    // it the same cert in both arguments, even when said cert is not self-signed, openssl would
+    // give it a green light and say it's valid. So we do this hack to avoid pretending
+    // certificates are their own signer when they're not. This is a hack because it's possible
+    // that a certificate is not self-signed and has the same issuer and subject and it would pass
+    // here undetected. This is not a big deal in our use case because these certs are all coming
+    // from our trusted installer/operators.
+    if potential_signer == signee && !(*(**potential_signer).borrow().distributed_cert).borrow().certificate.original.subject_is_issuer() {
+        return false;
+    }
+
     let mut signing_cert_file = tempfile::NamedTempFile::new().unwrap();
     signing_cert_file
         .write_all(

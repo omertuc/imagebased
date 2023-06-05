@@ -15,6 +15,7 @@ pub(crate) struct DistributedJwt {
     pub(crate) jwt: Jwt,
     pub(crate) locations: Locations,
     pub(crate) signer: JwtSigner,
+    pub(crate) regenerated: bool,
 }
 
 impl DistributedJwt {
@@ -25,6 +26,7 @@ impl DistributedJwt {
             JwtSigner::PrivateKey(_private_key) => self.resign(&original_signing_key, new_signing_key),
         };
         self.jwt.str = new_key;
+        self.regenerated = true;
     }
 
     fn resign(&self, original_public_key: &PublicKey, new_signing_key_pair: &InMemorySigningKeyPair) -> String {

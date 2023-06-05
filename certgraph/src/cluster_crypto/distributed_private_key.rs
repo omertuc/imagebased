@@ -20,6 +20,7 @@ pub(crate) struct DistributedPrivateKey {
     pub(crate) locations: Locations,
     pub(crate) signees: Vec<Signee>,
     pub(crate) associated_distributed_public_key: Option<Rc<RefCell<DistributedPublicKey>>>,
+    pub(crate) regenerated: bool,
 }
 
 impl Display for DistributedPrivateKey {
@@ -57,9 +58,10 @@ impl DistributedPrivateKey {
         }
 
         self.key = PrivateKey::Rsa(self_new_rsa_private_key);
+        self.regenerated = true;
 
         if let Some(public_key) = &self.associated_distributed_public_key {
-            (*public_key).borrow_mut().key = PublicKey::from(&self.key);
+            (*public_key).borrow_mut().regenerate(&self.key);
         }
     }
 

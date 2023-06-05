@@ -5,12 +5,13 @@ use crate::k8s_etcd::{get_etcd_yaml, InMemoryK8sEtcd};
 
 use super::locations::{FileContentLocation, FileLocation, K8sLocation, Location, LocationValueType, Locations};
 
-use super::{PublicKey, pem_utils};
+use super::{pem_utils, PublicKey, PrivateKey};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DistributedPublicKey {
     pub(crate) key: PublicKey,
     pub(crate) locations: Locations,
+    pub(crate) regenerated: bool,
 }
 
 impl Display for DistributedPublicKey {
@@ -28,6 +29,11 @@ impl Display for DistributedPublicKey {
 }
 
 impl DistributedPublicKey {
+    pub(crate) fn regenerate(&mut self, new_private: &PrivateKey) {
+        self.key = new_private.into();
+        self.regenerated = true;
+    }
+
     pub(crate) async fn commit_to_etcd_and_disk(&self, etcd_client: &mut InMemoryK8sEtcd) {
         for location in self.locations.0.iter() {
             match location {

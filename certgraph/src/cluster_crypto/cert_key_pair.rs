@@ -1,6 +1,6 @@
 use super::{
     crypto_utils::generate_rsa_key,
-    distributed_private_key,
+    distributed_private_key::DistributedPrivateKey,
     distributed_public_key::DistributedPublicKey,
     encode_tbs_cert_to_der,
     locations::{FileContentLocation, FileLocation, K8sLocation, Location},
@@ -23,7 +23,7 @@ use x509_certificate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CertKeyPair {
-    pub(crate) distributed_private_key: Option<Rc<RefCell<distributed_private_key::DistributedPrivateKey>>>,
+    pub(crate) distributed_private_key: Option<Rc<RefCell<DistributedPrivateKey>>>,
     pub(crate) distributed_cert: Rc<RefCell<DistributedCert>>,
 
     /// The signer is the cert that signed this cert. If this is a self-signed cert, then this will
@@ -34,6 +34,7 @@ pub(crate) struct CertKeyPair {
     /// Sometimes cert public keys also appear on their own, outside the cert, so we need to track
     /// them
     pub(crate) associated_public_key: Option<Rc<RefCell<DistributedPublicKey>>>,
+    pub(crate) regenerated: bool,
 }
 
 impl CertKeyPair {
@@ -57,7 +58,9 @@ impl CertKeyPair {
         }
 
         if let Some(associated_public_key) = &mut self.associated_public_key {
-            (*associated_public_key).borrow_mut().key = (&PrivateKey::Rsa(rsa_private_key.clone())).into();
+            (*associated_public_key)
+                .borrow_mut()
+                .regenerate(&PrivateKey::Rsa(rsa_private_key.clone()));
         }
 
         // This condition exists because not all certs originally had a private key
@@ -67,6 +70,8 @@ impl CertKeyPair {
         if let Some(distributed_private_key) = &mut self.distributed_private_key {
             (**distributed_private_key).borrow_mut().key = PrivateKey::Rsa(rsa_private_key)
         }
+
+        self.regenerated = true;
     }
 
     pub(crate) fn re_sign_cert(
