@@ -662,37 +662,22 @@ impl ClusterCryptoObjectsInternal {
     /// Given a ValidatingWebhookConfiguration taken from etcd, scan it for cryptographic keys and
     /// certificates and record them in the appropriate data structures.
     fn scan_k8s_validatingwebhookconfiguration(&mut self, value: &Value, k8s_resource_location: &K8sResourceLocation) {
-        if let Some(webhooks) = value.as_object().unwrap().get("webhooks") {
-            match webhooks {
-                Value::Array(webhooks) => {
-                    for (webhook_index, webhook_value) in webhooks.iter().enumerate() {
-                        match webhook_value {
-                            Value::Object(webhook) => {
-                                if let Some(client_config) = webhook.get("clientConfig") {
-                                    match client_config {
-                                        Value::Object(client_config) => {
-                                            if let Some(ca_bundle) = client_config.get("caBundle") {
-                                                let location = &Location::K8s(K8sLocation {
-                                                    resource_location: k8s_resource_location.clone(),
-                                                    yaml_location: YamlLocation {
-                                                        json_pointer: format!("/webhooks/{webhook_index}/clientConfig/caBundle"),
-                                                        value: LocationValueType::Unknown,
-                                                        encoding: FieldEncoding::None,
-                                                    },
-                                                });
+        if let Some(Value::Array(webhooks)) = value.as_object().unwrap().get("webhooks") {
+            for (webhook_index, webhook_value) in webhooks.iter().enumerate() {
+                if let Some(Value::Object(client_config)) = webhook_value.get("clientConfig") {
+                    if let Some(ca_bundle) = client_config.get("caBundle") {
+                        let location = &Location::K8s(K8sLocation {
+                            resource_location: k8s_resource_location.clone(),
+                            yaml_location: YamlLocation {
+                                json_pointer: format!("/webhooks/{webhook_index}/clientConfig/caBundle"),
+                                value: LocationValueType::Unknown,
+                                encoding: FieldEncoding::Base64,
+                            },
+                        });
 
-                                                self.process_base64_value(ca_bundle, location);
-                                            }
-                                        }
-                                        _ => todo!(),
-                                    }
-                                }
-                            }
-                            _ => todo!(),
-                        }
+                        self.process_base64_value(ca_bundle, location);
                     }
                 }
-                _ => todo!(),
             }
         }
     }
@@ -732,17 +717,19 @@ impl ClusterCryptoObjectsInternal {
                             if let Value::Object(file) = file {
                                 if let Some(Value::String(path)) = file.get("path") {
                                     if path.ends_with(".pem") || path.ends_with(".crt") {
-                                        if let Some(contents) = file.get("contents") {
-                                            let location = &Location::K8s(K8sLocation {
-                                                resource_location: k8s_resource_location.clone(),
-                                                yaml_location: YamlLocation {
-                                                    json_pointer: format!("/spec/config/storage/files/{file_index}/contents"),
-                                                    value: LocationValueType::Unknown,
-                                                    encoding: FieldEncoding::DataUrl,
-                                                },
-                                            });
+                                        if let Some(Value::Object(contents)) = file.get("contents") {
+                                            if let Some(source) = contents.get("source") {
+                                                let location = &Location::K8s(K8sLocation {
+                                                    resource_location: k8s_resource_location.clone(),
+                                                    yaml_location: YamlLocation {
+                                                        json_pointer: format!("/spec/config/storage/files/{file_index}/contents/source"),
+                                                        value: LocationValueType::Unknown,
+                                                        encoding: FieldEncoding::DataUrl,
+                                                    },
+                                                });
 
-                                            self.process_data_url_value(contents, location);
+                                                self.process_data_url_value(source, location);
+                                            }
                                         }
                                     }
                                 }
@@ -1096,6 +1083,7 @@ impl ClusterCryptoObjectsInternal {
                 &(etcd_client.list_keys("configmaps").await),
                 &(etcd_client.list_keys("validatingwebhookconfigurations").await),
                 &(etcd_client.list_keys("apiregistration.k8s.io/apiservices").await),
+                &(etcd_client.list_keys("machineconfiguration.openshift.io/machineconfigs").await),
             ]
         };
 

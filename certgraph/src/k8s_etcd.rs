@@ -68,8 +68,12 @@ impl InMemoryK8sEtcdInternal {
                 let value = value.clone();
                 let etcd_client = Arc::clone(&self.etcd_client);
                 tokio::spawn(async move {
-                    let ouger_result = run_ouger("encode", value.as_slice()).await;
-                    etcd_client.lock().await.put(key.as_bytes(), ouger_result, None).await.unwrap()
+                    let value = if key.starts_with("/kubernetes.io/machineconfiguration.openshift.io/machineconfigs/") {
+                        value.to_vec()
+                    } else {
+                        run_ouger("encode", value.as_slice()).await
+                    };
+                    etcd_client.lock().await.put(key.as_bytes(), value, None).await.unwrap()
                 })
             })
             .collect::<Vec<_>>();
@@ -78,13 +82,16 @@ impl InMemoryK8sEtcdInternal {
     }
 
     pub(crate) async fn get(&self, key: &str) -> EtcdResult {
+        let mut result = EtcdResult {
+            key: key.to_string(),
+            value: vec![],
+        };
+
         {
             let hashmap = self.etcd_keyvalue_hashmap.lock().await;
             if let Some(value) = hashmap.get(key) {
-                return EtcdResult {
-                    key: key.to_string(),
-                    value: value.clone(),
-                };
+                result.value = value.clone();
+                return result;
             }
         }
 
@@ -94,16 +101,20 @@ impl InMemoryK8sEtcdInternal {
             .first()
             .expect(format!("couldn't get key {} from etcd", key).as_str())
             .value();
+
+        if key.starts_with("/kubernetes.io/machineconfiguration.openshift.io/machineconfigs/") {
+            result.value = raw_etcd_value.to_vec();
+            return result;
+        }
+
         let decoded_value = run_ouger("decode", raw_etcd_value).await;
         self.etcd_keyvalue_hashmap
             .lock()
             .await
             .insert(key.to_string(), decoded_value.clone());
 
-        EtcdResult {
-            key: key.to_string(),
-            value: decoded_value,
-        }
+        result.value = decoded_value;
+        result
     }
 
     pub(crate) async fn put(&mut self, key: &str, value: Vec<u8>) {

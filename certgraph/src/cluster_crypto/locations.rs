@@ -271,6 +271,7 @@ impl K8sResourceLocation {
                 Some(apiversion_first_component_value) => {
                     match apiversion_first_component_value {
                         "apiregistration.k8s.io" => format!("{}/", apiversion_first_component_value),
+                        "machineconfiguration.openshift.io" => format!("{}/", apiversion_first_component_value),
                         _ => "".to_string(),
                     }
                 }
