@@ -53,7 +53,7 @@ pub(crate) fn recreate_yaml_at_location_with_new_pem(mut resource: Value, yaml_l
             panic!("shouldn't happen {} {:#?}", resource.to_string(), yaml_location);
         }
     }
-    let newcontents = serde_yaml::to_string(&resource).unwrap();
+    let newcontents = serde_json::to_string(&resource).unwrap();
     newcontents
 }
 
