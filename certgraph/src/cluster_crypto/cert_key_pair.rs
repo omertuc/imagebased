@@ -6,7 +6,11 @@ use super::{
     locations::{FileContentLocation, FileLocation, K8sLocation, Location},
     pem_utils, Certificate, DistributedCert, PrivateKey, Signee,
 };
-use crate::{cluster_crypto::locations::LocationValueType, file_utils::{recreate_yaml_at_location_with_new_pem, get_filesystem_yaml}, k8s_etcd::{InMemoryK8sEtcd, get_etcd_yaml}};
+use crate::{
+    cluster_crypto::locations::LocationValueType,
+    file_utils::{get_filesystem_yaml, recreate_yaml_at_location_with_new_pem},
+    k8s_etcd::{get_etcd_yaml, InMemoryK8sEtcd},
+};
 use bcder::BitString;
 use bytes::Bytes;
 use rsa::{signature::Signer, RsaPrivateKey};
@@ -84,9 +88,6 @@ impl CertKeyPair {
             subject_public_key: BitString::new(0, self_new_key_pair.public_key_data()),
         };
 
-        // The to-be-signed ceritifcate, encoded to DER, is the bytes we sign
-        let tbs_der = encode_tbs_cert_to_der(&tbs_certificate);
-
         // If we weren't given a key to sign with, we use the new key we just generated
         // as this is a root (self-signed) certificate
         let signing_key = if let Some(key_pair) = &sign_with {
@@ -95,12 +96,18 @@ impl CertKeyPair {
             &self_new_key_pair
         };
 
+        // TODO: No need to change the signature algorithm once we know how to re-sign ECDSA,
+        // we're only forced to change this because we make all certs RSA
+        let signature_algorithm: AlgorithmIdentifier = signing_key.signature_algorithm().unwrap().into();
+        tbs_certificate.signature = signature_algorithm.clone();
+
+        // The to-be-signed ceritifcate, encoded to DER, is the bytes we sign
+        let tbs_der = encode_tbs_cert_to_der(&tbs_certificate);
+
         // Generate the actual signature
         let signature = signing_key.try_sign(&tbs_der).unwrap();
 
         // Create a full certificate by combining the to-be-signed part with the signature itself
-        let signature_algorithm: AlgorithmIdentifier = signing_key.signature_algorithm().unwrap().into();
-        tbs_certificate.signature = signature_algorithm.clone();
         let cert = rfc5280::Certificate {
             tbs_certificate,
             signature_algorithm,
