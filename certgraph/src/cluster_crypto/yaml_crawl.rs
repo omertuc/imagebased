@@ -8,9 +8,6 @@ pub(crate) struct YamlValue {
     pub(crate) value: Value,
 }
 
-/// Given an etcd key (not cryptographic key, just key as in key-value) and its contents, scan
-/// it for cryptographic keys and certificates and record them in the appropriate data
-/// structures.
 pub(crate) fn crawl_yaml(yaml_value: Value) -> Vec<YamlValue> {
     let get = yaml_value.get("kind");
     match get {
@@ -26,8 +23,6 @@ pub(crate) fn crawl_yaml(yaml_value: Value) -> Vec<YamlValue> {
     }
 }
 
-/// Given a configmap taken from etcd, scan it for cryptographic keys and certificates and
-/// record them in the appropriate data structures.
 pub(crate) fn scan_configmap(value: &Value) -> Vec<YamlValue> {
     let mut ret = Vec::new();
 
@@ -53,8 +48,6 @@ pub(crate) fn scan_configmap(value: &Value) -> Vec<YamlValue> {
     ret
 }
 
-/// Given a secret taken from etcd, scan it for cryptographic keys and certificates and
-/// record them in the appropriate data structures.
 pub(crate) fn scan_secret(value: &Value) -> Vec<YamlValue> {
     let mut res = Vec::new();
     if let Some(data) = value.as_object().unwrap().get("data") {
@@ -90,8 +83,6 @@ pub(crate) fn scan_secret(value: &Value) -> Vec<YamlValue> {
     res
 }
 
-/// Given a ValidatingWebhookConfiguration taken from etcd, scan it for cryptographic keys and
-/// certificates and record them in the appropriate data structures.
 pub(crate) fn scan_validatingwebhookconfiguration(value: &Value) -> Vec<YamlValue> {
     let mut res = vec![];
     if let Some(Value::Array(webhooks)) = value.as_object().unwrap().get("webhooks") {
@@ -114,7 +105,6 @@ pub(crate) fn scan_validatingwebhookconfiguration(value: &Value) -> Vec<YamlValu
     res
 }
 
-/// Given an APIService taken from etcd, scan it for cryptographic keys and certificates
 pub(crate) fn scan_apiservice(value: &Value) -> Vec<YamlValue> {
     let mut res = Vec::new();
     if let Some(spec_object) = value.as_object().unwrap().get("spec") {
@@ -135,8 +125,6 @@ pub(crate) fn scan_apiservice(value: &Value) -> Vec<YamlValue> {
     res
 }
 
-/// Given a MachineConfig taken from etcd, scan it for cryptographic keys and certificates and
-/// record them in the appropriate data structures.
 pub(crate) fn scan_machineconfig(value: &Value) -> Vec<YamlValue> {
     let mut res = Vec::new();
     if let Some(Value::Object(spec)) = value.as_object().unwrap().get("spec") {

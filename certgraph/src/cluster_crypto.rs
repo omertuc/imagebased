@@ -852,16 +852,11 @@ impl ClusterCryptoObjectsInternal {
     }
 
     fn process_static_resource_yaml(&mut self, contents: String, yaml_path: &PathBuf) -> Option<()> {
-        let value: &Value = &serde_yaml::from_str(contents.as_str()).ok().unwrap();
-        let yaml_values = yaml_crawl::crawl_yaml(value.clone());
-
-        for yaml_value in yaml_values {
-            let yaml_location = &yaml_value.location;
-
+        for yaml_value in yaml_crawl::crawl_yaml((&serde_yaml::from_str::<Value>(contents.as_str()).ok().unwrap()).clone()) {
             if let Some(decoded_yaml_value) = yaml_crawl::decode_yaml_value(&yaml_value) {
                 self.process_yaml_value(
                     decoded_yaml_value,
-                    &Location::file_yaml(&yaml_path.to_string_lossy().to_string(), yaml_location),
+                    &Location::file_yaml(&yaml_path.to_string_lossy().to_string(), &yaml_value.location),
                 );
             }
         }
