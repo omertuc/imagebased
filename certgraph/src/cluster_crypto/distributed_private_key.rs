@@ -1,17 +1,17 @@
-use pkcs1::EncodeRsaPrivateKey;
-
-use crate::{
-    file_utils::{get_filesystem_yaml, read_file_to_string, recreate_yaml_at_location_with_new_pem},
-    k8s_etcd::InMemoryK8sEtcd,
-};
-
 use super::{
     crypto_utils::generate_rsa_key,
     distributed_public_key::DistributedPublicKey,
     k8s_etcd::get_etcd_yaml,
+    keys::{PrivateKey, PublicKey},
     locations::{FileContentLocation, FileLocation, K8sLocation, Location, LocationValueType, Locations},
-    pem_utils, PrivateKey, PublicKey, Signee,
+    pem_utils,
+    signee::Signee,
 };
+use crate::{
+    file_utils::{get_filesystem_yaml, read_file_to_string, recreate_yaml_at_location_with_new_pem},
+    k8s_etcd::InMemoryK8sEtcd,
+};
+use pkcs1::EncodeRsaPrivateKey;
 use std::{self, cell::RefCell, fmt::Display, rc::Rc};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

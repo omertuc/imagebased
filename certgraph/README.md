@@ -47,7 +47,7 @@ sudo chown -R omer:omer /home/omer/repos/imagebased/certgraph/kubernetes
 sudo cp /home/omer/Documents/model6/sno_disk/ostree/deploy/rhcos/var/lib/kubelet -r /home/omer/repos/imagebased/certgraph/
 sudo chown -R omer:omer /home/omer/repos/imagebased/certgraph/kubelet
 
-cargo run --release -- --etcd-endpoint localhost:2379 --k8s-static-dir ./kubernetes --kubelet-dir ./kubelet
+cargo run --release -- --etcd-endpoint localhost:2379 --static-dir ./kubernetes --static-dir ./kubelet --static-dir ./machine-config-daemon
 ```
 
 # Run on cluster

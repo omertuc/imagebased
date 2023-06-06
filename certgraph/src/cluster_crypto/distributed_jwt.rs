@@ -1,6 +1,9 @@
 use super::{
+    crypto_utils::verify_jwt,
+    jwt::Jwt,
+    jwt::JwtSigner,
+    keys::PublicKey,
     locations::{FileLocation, K8sLocation, Location, LocationValueType, Locations},
-    verify_jwt, Jwt, JwtSigner, PublicKey,
 };
 use crate::{
     file_utils::encode_resource_data_entry,
@@ -82,7 +85,9 @@ impl DistributedJwt {
         }
 
         let newcontents = serde_yaml::to_string(&resource).unwrap();
-        etcd_client.put(&k8slocation.resource_location.as_etcd_key(), newcontents.as_bytes().to_vec()).await;
+        etcd_client
+            .put(&k8slocation.resource_location.as_etcd_key(), newcontents.as_bytes().to_vec())
+            .await;
     }
 
     pub(crate) async fn commit_to_filesystem(&self, _filelocation: &FileLocation) {

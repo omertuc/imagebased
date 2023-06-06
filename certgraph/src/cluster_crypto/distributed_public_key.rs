@@ -1,11 +1,13 @@
+use super::{
+    keys::{PrivateKey, PublicKey},
+    locations::{FileContentLocation, FileLocation, K8sLocation, Location, LocationValueType, Locations},
+    pem_utils,
+};
+use crate::{
+    file_utils::{get_filesystem_yaml, read_file_to_string, recreate_yaml_at_location_with_new_pem},
+    k8s_etcd::{get_etcd_yaml, InMemoryK8sEtcd},
+};
 use std::fmt::Display;
-
-use crate::file_utils::{get_filesystem_yaml, read_file_to_string, recreate_yaml_at_location_with_new_pem};
-use crate::k8s_etcd::{get_etcd_yaml, InMemoryK8sEtcd};
-
-use super::locations::{FileContentLocation, FileLocation, K8sLocation, Location, LocationValueType, Locations};
-
-use super::{pem_utils, PublicKey, PrivateKey};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DistributedPublicKey {

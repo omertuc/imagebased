@@ -40,25 +40,17 @@ pub(crate) enum Location {
 }
 
 impl Location {
-    pub fn k8s(k8s_resource_location: K8sResourceLocation, prefix: &str, key: &str, encoding: FieldEncoding) -> Location {
+    pub fn k8s_yaml(k8s_resource_location: &K8sResourceLocation, yaml_location: &YamlLocation) -> Location {
         Location::K8s(K8sLocation {
             resource_location: k8s_resource_location.clone(),
-            yaml_location: YamlLocation {
-                json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
-                value: LocationValueType::Unknown,
-                encoding,
-            },
+            yaml_location: yaml_location.clone(),
         })
     }
 
-    pub fn file_yaml(file_path: &str, prefix: &str, key: &str, encoding: FieldEncoding) -> Location {
+    pub fn file_yaml(file_path: &str, yaml_location: &YamlLocation) -> Location {
         Location::Filesystem(FileLocation {
             path: file_path.to_string(),
-            content_location: FileContentLocation::Yaml(YamlLocation {
-                json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
-                value: LocationValueType::Unknown,
-                encoding,
-            }),
+            content_location: FileContentLocation::Yaml(yaml_location.clone()),
         })
     }
 }
@@ -207,6 +199,16 @@ pub(crate) struct YamlLocation {
     pub(crate) json_pointer: String,
     pub(crate) value: LocationValueType,
     pub(crate) encoding: FieldEncoding,
+}
+
+impl YamlLocation {
+    pub fn new(prefix: &str, key: &str, encoding: FieldEncoding) -> Self {
+        YamlLocation {
+            json_pointer: format!("{}/{}", prefix, key.to_string().replace("/", "~1")),
+            value: LocationValueType::Unknown,
+            encoding,
+        }
+    }
 }
 
 impl std::fmt::Display for YamlLocation {

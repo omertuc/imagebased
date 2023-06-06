@@ -22,13 +22,9 @@ struct Args {
     #[arg(short, long)]
     etcd_endpoint: String,
 
-    /// /etc/kubernetes directory to recertifiy
+    /// Directory to recertifiy, such as /var/lib/kubelet, /etc/kubernetes and /etc/machine-config-daemon. Can specify multiple times
     #[arg(short, long)]
-    k8s_static_dir: PathBuf,
-
-    /// /var/lib/kubelet directory to recertify
-    #[arg(short, long)]
-    kubelet_dir: PathBuf,
+    static_dir: Vec<PathBuf>,
 
     /// Optionally, your kubeconfig so its cert/keys can be regenerated as well and you can still
     /// log in after recertification
@@ -44,32 +40,29 @@ async fn main() {
 }
 
 async fn main_internal(args: Args) {
-    let (kubeconfig, kubelet_dir, k8s_dir, mut cluster_crypto, memory_etcd) = init(args).await;
-    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubeconfig, kubelet_dir, k8s_dir).await;
+    let (kubeconfig, static_dirs, mut cluster_crypto, memory_etcd) = init(args).await;
+    recertify(Arc::clone(&memory_etcd), &mut cluster_crypto, kubeconfig, static_dirs).await;
     finalize(memory_etcd, &mut cluster_crypto).await;
     print_summary(cluster_crypto).await;
 }
 
-async fn init(args: Args) -> (Option<PathBuf>, PathBuf, PathBuf, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
+async fn init(args: Args) -> (Option<PathBuf>, Vec<PathBuf>, ClusterCryptoObjects, Arc<Mutex<InMemoryK8sEtcd>>) {
     let etcd_client = EtcdClient::connect([args.etcd_endpoint.as_str()], None).await.unwrap();
 
     let kubeconfig = args.kubeconfig;
-    let kubernetes_dir = args.k8s_static_dir;
-    let kubelet_dir = args.kubelet_dir;
     let cluster_crypto = ClusterCryptoObjects::new();
     let in_memory_etcd_client = Arc::new(Mutex::new(InMemoryK8sEtcd::new(etcd_client)));
 
-    (kubeconfig, kubelet_dir, kubernetes_dir, cluster_crypto, in_memory_etcd_client)
+    (kubeconfig, args.static_dir, cluster_crypto, in_memory_etcd_client)
 }
 
 async fn recertify(
     in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>,
     cluster_crypto: &mut ClusterCryptoObjects,
     kubeconfig: Option<PathBuf>,
-    kubernetes_dir: PathBuf,
-    kubelet_dir: PathBuf,
+    static_dirs: Vec<PathBuf>,
 ) {
-    collect_crypto_objects(cluster_crypto, &in_memory_etcd_client, kubeconfig, kubelet_dir, kubernetes_dir).await;
+    collect_crypto_objects(cluster_crypto, &in_memory_etcd_client, kubeconfig, static_dirs).await;
     establish_relationships(cluster_crypto).await;
     regenerate_cryptographic_objects(&cluster_crypto).await;
 }
@@ -128,15 +121,15 @@ async fn collect_crypto_objects(
     cluster_crypto: &mut ClusterCryptoObjects,
     in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>,
     kubeconfig: Option<PathBuf>,
-    kubelet_dir: PathBuf,
-    kubernetes_dir: PathBuf,
+    static_dirs: Vec<PathBuf>,
 ) {
     println!("Processing etcd...");
     cluster_crypto.process_etcd_resources(Arc::clone(in_memory_etcd_client)).await;
-    println!("Reading kubelet dir...");
-    cluster_crypto.process_k8s_static_resources(&kubelet_dir).await;
-    println!("Reading kubernetes dir...");
-    cluster_crypto.process_k8s_static_resources(&kubernetes_dir).await;
+
+    for static_dir in &static_dirs {
+        println!("Reading static dir {}...", static_dir.display());
+        cluster_crypto.process_k8s_static_resources(&static_dir).await;
+    }
 
     // If we have a kubeconfig, we can also process that
     if let Some(kubeconfig_path) = kubeconfig {
@@ -155,8 +148,11 @@ mod tests {
     async fn test_init() {
         let args = super::Args {
             etcd_endpoint: "http://localhost:2379".to_string(),
-            k8s_static_dir: "./kubernetes".into(),
-            kubelet_dir: "./kubelet".into(),
+            static_dir: vec![
+                PathBuf::from("./kubernetes"),
+                PathBuf::from("./machine-config-daemon"),
+                PathBuf::from("./kubelet"),
+            ],
             kubeconfig: None,
         };
 
