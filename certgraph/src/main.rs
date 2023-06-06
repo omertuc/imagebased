@@ -1,3 +1,4 @@
+use crate::file_utils::read_file_to_string;
 use clap::Parser;
 use cluster_crypto::ClusterCryptoObjects;
 use etcd_client::Client as EtcdClient;
@@ -5,12 +6,11 @@ use k8s_etcd::InMemoryK8sEtcd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 
-use crate::file_utils::read_file_to_string;
-
 mod cluster_crypto;
 mod file_utils;
 mod json_tools;
 mod k8s_etcd;
+mod ocp_postprocess;
 mod progress;
 mod rules;
 
@@ -77,6 +77,7 @@ async fn recertify(
 async fn finalize(in_memory_etcd_client: Arc<Mutex<InMemoryK8sEtcd>>, cluster_crypto: &mut ClusterCryptoObjects) {
     // Commit the cryptographic objects back to memory etcd and to disk
     commit_cryptographic_objects_back(&in_memory_etcd_client, &cluster_crypto).await;
+    ocp_postprocess(&in_memory_etcd_client).await;
 
     // Since we're using an in-memory fake etcd, we need to also commit the changes to the real
     // etcd after we're done
@@ -98,6 +99,16 @@ async fn commit_cryptographic_objects_back(in_memory_etcd_client: &Arc<Mutex<InM
 async fn regenerate_cryptographic_objects(cluster_crypto: &ClusterCryptoObjects) {
     println!("Regenerating certs...");
     cluster_crypto.regenerate_crypto().await;
+}
+
+/// Perform some OCP-related post-processing to make some OCP operators happy. For example, the OLM
+/// packageserver operator requires that its secret's olmcahash sha256 hash annotation be set to
+/// the sha256 hash of its APIServer's CA cert. Otherwise it makes no effort to reconcile it. This
+/// method does that. Ideally we should get OLM to be more tolerant of this and remove this
+/// post-processing step.
+async fn ocp_postprocess(in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>) {
+    println!("OCP postprocessing...");
+    ocp_postprocess::fix_olm_secret_hash_annotation(in_memory_etcd_client).await;
 }
 
 async fn establish_relationships(cluster_crypto: &mut ClusterCryptoObjects) {

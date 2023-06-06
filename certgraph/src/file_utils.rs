@@ -2,7 +2,7 @@ use crate::cluster_crypto::{
     locations::{FileLocation, LocationValueType, YamlLocation},
     pem_utils,
 };
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{engine::general_purpose::STANDARD as base64_standard, Engine as _};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
@@ -60,7 +60,7 @@ pub(crate) fn recreate_yaml_at_location_with_new_pem(mut resource: Value, yaml_l
 pub(crate) fn encode_resource_data_entry(k8slocation: &YamlLocation, value: &String) -> String {
     match k8slocation.encoding {
         crate::cluster_crypto::locations::FieldEncoding::None => value.to_string(),
-        crate::cluster_crypto::locations::FieldEncoding::Base64 => STANDARD.encode(value.as_bytes()),
+        crate::cluster_crypto::locations::FieldEncoding::Base64 => base64_standard.encode(value.as_bytes()),
         crate::cluster_crypto::locations::FieldEncoding::DataUrl => {
             let mut url = dataurl::DataUrl::new();
             url.set_data(value.as_bytes());
@@ -73,7 +73,7 @@ pub(crate) fn decode_resource_data_entry(yaml_location: &YamlLocation, value_at_
     let decoded = match yaml_location.encoding {
         crate::cluster_crypto::locations::FieldEncoding::None => value_at_json_pointer.to_string(),
         crate::cluster_crypto::locations::FieldEncoding::Base64 => {
-            String::from_utf8_lossy(STANDARD.decode(value_at_json_pointer.as_bytes()).unwrap().as_slice()).to_string()
+            String::from_utf8_lossy(base64_standard.decode(value_at_json_pointer.as_bytes()).unwrap().as_slice()).to_string()
         }
         crate::cluster_crypto::locations::FieldEncoding::DataUrl => {
             if let Ok(url) = data_url::DataUrl::process(value_at_json_pointer) {

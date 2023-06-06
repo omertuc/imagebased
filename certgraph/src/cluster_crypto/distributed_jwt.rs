@@ -62,7 +62,7 @@ impl DistributedJwt {
     }
 
     pub(crate) async fn commit_to_etcd(&self, etcd_client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) {
-        let mut resource = get_etcd_yaml(etcd_client, k8slocation).await;
+        let mut resource = get_etcd_yaml(etcd_client, &k8slocation.resource_location).await;
         if let Some(value_at_json_pointer) = resource.pointer_mut(&k8slocation.yaml_location.json_pointer) {
             if let Value::String(value_at_json_pointer) = value_at_json_pointer {
                 match &k8slocation.yaml_location.value {

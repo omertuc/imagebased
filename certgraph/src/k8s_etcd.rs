@@ -1,4 +1,4 @@
-use crate::cluster_crypto::locations::K8sLocation;
+use crate::cluster_crypto::locations::K8sResourceLocation;
 use etcd_client::{Client as EtcdClient, GetOptions};
 use futures_util::future::join_all;
 use serde_json::Value;
@@ -157,9 +157,12 @@ async fn run_ouger(ouger_subcommand: &str, raw_etcd_value: &[u8]) -> Vec<u8> {
     result.stdout
 }
 
-pub(crate) async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) -> Value {
-    serde_yaml::from_str(&String::from_utf8_lossy(
-        &(client.get(k8slocation.resource_location.as_etcd_key()).await.value),
-    ))
-    .unwrap()
+pub(crate) async fn get_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sResourceLocation) -> Value {
+    serde_yaml::from_str(&String::from_utf8_lossy(&(client.get(k8slocation.as_etcd_key()).await.value))).unwrap()
+}
+
+pub(crate) async fn put_etcd_yaml(client: &mut InMemoryK8sEtcd, k8slocation: &K8sResourceLocation, value: Value) {
+    client
+        .put(&k8slocation.as_etcd_key(), serde_yaml::to_string(&value).unwrap().as_bytes().into())
+        .await;
 }

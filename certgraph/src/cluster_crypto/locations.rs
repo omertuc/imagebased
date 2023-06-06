@@ -223,6 +223,21 @@ pub(crate) struct K8sResourceLocation {
     pub(crate) name: String,
 }
 
+impl K8sResourceLocation {
+    pub(crate) fn new(namespace: Option<&str>, kind: &str, name: &str, apiversion: &str) -> Self {
+        Self {
+            namespace: if let Some(namespace) = namespace {
+                Some(namespace.to_string())
+            } else {
+                None
+            },
+            kind: kind.to_string(),
+            name: name.to_string(),
+            apiversion: apiversion.to_string(),
+        }
+    }
+}
+
 impl From<&Value> for K8sResourceLocation {
     fn from(value: &Value) -> Self {
         Self {

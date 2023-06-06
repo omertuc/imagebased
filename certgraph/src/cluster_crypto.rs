@@ -4,7 +4,7 @@ use crate::{
     rules::{self, IGNORE_LIST_CONFIGMAP, KNOWN_MISSING_PRIVATE_KEY_CERTS},
 };
 use base64::{
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    engine::general_purpose::{STANDARD as base64_standard, URL_SAFE_NO_PAD},
     Engine as _,
 };
 use bcder::{encode::Values, Mode};
@@ -132,7 +132,7 @@ impl From<Bytes> for PublicKey {
 impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Rsa(der_bytes) => write!(f, "<rsa_pub: {}>", STANDARD.encode(der_bytes.as_ref())),
+            Self::Rsa(der_bytes) => write!(f, "<rsa_pub: {}>", base64_standard.encode(der_bytes.as_ref())),
             Self::Ec(x) => write!(f, "<ec_pub: {:?}>", x),
         }
     }
@@ -909,7 +909,7 @@ impl ClusterCryptoObjectsInternal {
     /// cryptographic keys and certificates and record them in the appropriate data structures.
     fn process_base64_value(&mut self, value: &Value, location: &Location) {
         if let Value::String(string_value) = value {
-            if let Ok(value) = STANDARD.decode(string_value.as_bytes()) {
+            if let Ok(value) = base64_standard.decode(string_value.as_bytes()) {
                 self.process_unknown_yaml_value(
                     String::from_utf8(value).unwrap_or_else(|_| {
                         panic!("Failed to decode base64");

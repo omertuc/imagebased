@@ -145,7 +145,7 @@ impl CertKeyPair {
     }
 
     pub(crate) async fn commit_k8s_cert(&self, etcd_client: &mut InMemoryK8sEtcd, k8slocation: &K8sLocation) {
-        let resource = get_etcd_yaml(etcd_client, k8slocation).await;
+        let resource = get_etcd_yaml(etcd_client, &k8slocation.resource_location).await;
 
         etcd_client
             .put(
