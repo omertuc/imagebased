@@ -173,35 +173,39 @@ pub(crate) fn scan_machineconfig(value: &Value) -> Vec<YamlValue> {
 pub(crate) fn scan_kubeconfig(value: &Value) -> Vec<YamlValue> {
     let mut res = Vec::new();
 
-    for (i, user) in value["users"].as_array().unwrap().into_iter().enumerate() {
-        for user_field in ["client-certificate-data", "client-key-data"].iter() {
-            if let Some(field_value) = user.as_object().unwrap()["user"]
-                .as_object()
-                .unwrap()
-                .get(user_field.to_string().as_str())
-            {
-                res.push(YamlValue {
-                    location: YamlLocation::new(&format!("/users/{}/user", i), user_field, FieldEncoding::Base64),
-                    value: field_value.clone(),
-                });
+    if let Some(Value::Array(users)) = value.get("users") {
+        for (i, user) in users.into_iter().enumerate() {
+            for user_field in ["client-certificate-data", "client-key-data"].iter() {
+                if let Some(field_value) = user.as_object().unwrap()["user"]
+                    .as_object()
+                    .unwrap()
+                    .get(user_field.to_string().as_str())
+                {
+                    res.push(YamlValue {
+                        location: YamlLocation::new(&format!("/users/{}/user", i), user_field, FieldEncoding::Base64),
+                        value: field_value.clone(),
+                    });
+                }
             }
         }
     }
 
-    for (i, cluster) in value["clusters"].as_array().unwrap().into_iter().enumerate() {
-        if let Some(cluster_cert) = cluster.as_object().unwrap()["cluster"]
-            .as_object()
-            .unwrap()
-            .get("certificate-authority-data")
-        {
-            res.push(YamlValue {
-                location: YamlLocation::new(
-                    &format!("/clusters/{}/cluster", i),
-                    "certificate-authority-data",
-                    FieldEncoding::Base64,
-                ),
-                value: cluster_cert.clone(),
-            });
+    if let Some(Value::Array(clusters)) = value.get("clusters") {
+        for (i, cluster) in clusters.into_iter().enumerate() {
+            if let Some(cluster_cert) = cluster.as_object().unwrap()["cluster"]
+                .as_object()
+                .unwrap()
+                .get("certificate-authority-data")
+            {
+                res.push(YamlValue {
+                    location: YamlLocation::new(
+                        &format!("/clusters/{}/cluster", i),
+                        "certificate-authority-data",
+                        FieldEncoding::Base64,
+                    ),
+                    value: cluster_cert.clone(),
+                });
+            }
         }
     }
 
