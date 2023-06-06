@@ -94,11 +94,7 @@ async fn regenerate_cryptographic_objects(cluster_crypto: &ClusterCryptoObjects)
     cluster_crypto.regenerate_crypto().await;
 }
 
-/// Perform some OCP-related post-processing to make some OCP operators happy. For example, the OLM
-/// packageserver operator requires that its secret's olmcahash sha256 hash annotation be set to
-/// the sha256 hash of its APIServer's CA cert. Otherwise it makes no effort to reconcile it. This
-/// method does that. Ideally we should get OLM to be more tolerant of this and remove this
-/// post-processing step.
+/// Perform some OCP-related post-processing to make some OCP operators happy
 async fn ocp_postprocess(in_memory_etcd_client: &Arc<Mutex<InMemoryK8sEtcd>>) {
     println!("OCP postprocessing...");
     ocp_postprocess::fix_olm_secret_hash_annotation(in_memory_etcd_client).await;
