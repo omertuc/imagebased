@@ -1142,12 +1142,17 @@ impl ClusterCryptoObjectsInternal {
 
     /// Recursively scans a directoy for files which exclusively contain a PEM bundle (as opposed
     /// to being embedded in a YAML file) and records them in the appropriate data structures.
-    async fn process_filesystem_raw_pems(&mut self, k8s_dir: &Path) {
-        for raw_pem_path in file_utils::globvec(k8s_dir, "**/*.pem")
+    async fn process_filesystem_raw_pems(&mut self, dir: &Path) {
+        for raw_pem_path in file_utils::globvec(dir, "**/*.pem")
             .into_iter()
-            .chain(file_utils::globvec(k8s_dir, "**/*.crt").into_iter())
-            .chain(file_utils::globvec(k8s_dir, "**/*.key").into_iter())
-            .chain(file_utils::globvec(k8s_dir, "**/*.pub").into_iter())
+            .chain(file_utils::globvec(dir, "**/*.crt").into_iter())
+            .chain(file_utils::globvec(dir, "**/*.key").into_iter())
+            .chain(file_utils::globvec(dir, "**/*.pub").into_iter())
+            // Also scan for the .mcdorig versions of the above files, which are sometimes created
+            // my machine-config-daemon
+            .chain(file_utils::globvec(dir, "**/*.crt.mcdorig").into_iter())
+            .chain(file_utils::globvec(dir, "**/*.key.mcdorig").into_iter())
+            .chain(file_utils::globvec(dir, "**/*.pub.mcdorig").into_iter())
         {
             self.process_static_resource_raw_pem_bundle(read_file_to_string(raw_pem_path.clone()).await, &raw_pem_path);
         }
@@ -1155,8 +1160,8 @@ impl ClusterCryptoObjectsInternal {
 
     /// Recrusively scans a directory for yaml files which might contain cryptographic objects and
     /// records said objects in the appropriate data structures.
-    async fn process_filesystem_yamls(&mut self, k8s_dir: &Path) {
-        for yaml_path in file_utils::globvec(k8s_dir, "**/kubeconfig*").into_iter() {
+    async fn process_filesystem_yamls(&mut self, dir: &Path) {
+        for yaml_path in file_utils::globvec(dir, "**/kubeconfig*").into_iter() {
             if self
                 .process_static_resource_yaml(read_file_to_string(yaml_path.clone()).await, &yaml_path)
                 .is_none()
