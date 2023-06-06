@@ -9,16 +9,26 @@ pub(crate) struct YamlValue {
 }
 
 pub(crate) fn crawl_yaml(yaml_value: Value) -> Vec<YamlValue> {
-    let get = yaml_value.get("kind");
-    match get {
+    let kind = yaml_value.get("kind");
+    let apiversion = yaml_value.get("apiVersion");
+    match kind {
         Some(kind) => match kind.as_str().unwrap() {
             "Secret" => scan_secret(&yaml_value),
             "ConfigMap" => scan_configmap(&yaml_value),
             "ValidatingWebhookConfiguration" => scan_validatingwebhookconfiguration(&yaml_value),
             "APIService" => scan_apiservice(&yaml_value),
             "MachineConfig" => scan_machineconfig(&yaml_value),
+            "Config" => match apiversion {
+                Some(apiversion) => match apiversion.as_str().unwrap() {
+                    "v1" => scan_kubeconfig(&yaml_value),
+                    _ => Vec::new(),
+                },
+                None => Vec::new(),
+            },
             _ => Vec::new(),
         },
+        // Not all kubeconfigs have a kind field, so we try to process any YAML without a kind as
+        // if it were a kubeconfig
         None => scan_kubeconfig(&yaml_value),
     }
 }
