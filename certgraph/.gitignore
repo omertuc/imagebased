@@ -1,4 +1,0 @@
-target/
-kubernetes/*
-machine-config-daemon/*
-kubelet/*
